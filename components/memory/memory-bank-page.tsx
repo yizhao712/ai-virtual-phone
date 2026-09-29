@@ -9,7 +9,7 @@ import { Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import type { MemoryEntry, MemoryConfig } from "@/lib/memory-types";
-import { DEFAULT_CORE_MEMORY_PROMPT, DEFAULT_SUMMARIZATION_PROMPT, isMemoryHidden } from "@/lib/memory-types";
+import { DEFAULT_CORE_MEMORY_PROMPT, DEFAULT_REFINE_PROMPT, DEFAULT_SUMMARIZATION_PROMPT, isMemoryHidden } from "@/lib/memory-types";
 import {
     loadMemoryConfig,
     saveMemoryConfig,
@@ -46,19 +46,6 @@ const MEMORY_TOKEN_BUDGET_STEP: Record<MemoryBudgetKey, number> = {
     longTermTokenBudget: 1000,
 };
 const MANUAL_MEMORY_CONTENT_LIMIT = 3000;
-const MEMORY_REFINE_PROMPT = `你是一个记忆整理助手。请把以下关于{{char}}的若干条长期记忆提炼合并为一段精简的长期记忆。
-
-长期记忆（按时间从早到晚）：
-{{memories}}
-
-要求：
-- 用第三人称，事实性描述
-- 合并重复信息，保留关键事实：名字、承诺、情感变化、关系里程碑、用户分享的具体信息
-- 信息有冲突时以较晚的记录为准
-- 不要编造原文没有的内容
-- 不要包含格式标记
-
-提炼结果：`;
 // 详情页时间线最多解析渲染的条数：全量历史可能有几万条，
 // 一次性解析+渲染会把 iOS Safari 的单页内存顶爆（灰屏杀页）
 const MEMORY_TIMELINE_ENTRY_CAP = 2000;
@@ -244,6 +231,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [rebuildingCore, setRebuildingCore] = useState(false);
     const [editingPrompt, setEditingPrompt] = useState<string | null>(null);
     const [editingCorePrompt, setEditingCorePrompt] = useState<string | null>(null);
+    const [editingRefinePrompt, setEditingRefinePrompt] = useState<string | null>(null);
     const [confirmDeleteEntryId, setConfirmDeleteEntryId] = useState<string | null>(null);
     const [confirmClearAll, setConfirmClearAll] = useState(false);
     const [pickedCharId, setPickedCharId] = useState<string | null>(null);
@@ -365,6 +353,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         if (view !== "settings") {
             setEditingPrompt(null);
             setEditingCorePrompt(null);
+            setEditingRefinePrompt(null);
         }
     }, [view]);
 
@@ -524,6 +513,25 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         showNotice("核心记忆提示词已恢复默认");
     };
 
+    const handleSaveRefinePrompt = () => {
+        if (editingRefinePrompt === null) return;
+        const trimmed = editingRefinePrompt.trim();
+        // 空内容或与默认一致时存 undefined，以后默认提示词升级能自动跟上
+        const refinePrompt = trimmed && trimmed !== DEFAULT_REFINE_PROMPT.trim() ? editingRefinePrompt : undefined;
+        const next = { ...config, refinePrompt };
+        setConfig(next);
+        saveMemoryConfig(next);
+        showNotice("提炼提示词已保存");
+    };
+
+    const handleResetRefinePrompt = () => {
+        setEditingRefinePrompt(DEFAULT_REFINE_PROMPT);
+        const next = { ...config, refinePrompt: undefined };
+        setConfig(next);
+        saveMemoryConfig(next);
+        showNotice("提炼提示词已恢复默认");
+    };
+
     const createManualMemoryId = (type: MemoryEntry["type"]) => (
         `mem_${type === "core" ? "core" : "lt"}_manual_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
     );
@@ -681,9 +689,12 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             return;
         }
         const memoriesText = sources.map(entry => `- [${getMemoryDisplayDate(entry)}] ${entry.content}`).join("\n");
-        const prompt = MEMORY_REFINE_PROMPT
-            .replace(/\{\{char\}\}/g, () => selectedChar?.name ?? "")
-            .replace("{{memories}}", () => memoriesText);
+        const template = config.refinePrompt?.trim() || DEFAULT_REFINE_PROMPT;
+        // 自定义提示词漏了 {{memories}} 时把记忆接在末尾，避免模型收不到内容
+        const withMemories = /\{\{memories\}\}/i.test(template) ? template : `${template}\n\n{{memories}}`;
+        const prompt = withMemories
+            .replace(/\{\{char\}\}/gi, () => selectedChar?.name ?? "")
+            .replace(/\{\{memories\}\}/gi, () => memoriesText);
         setRefining(true);
         try {
             const result = await simpleLLMCall(
@@ -1488,6 +1499,49 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         )}
                     </div>
                 </div>
+
+                <p className="menu-group-desc mx-2">提炼提示词</p>
+                {(() => {
+                    const savedRefinePrompt = config.refinePrompt?.trim() ? config.refinePrompt : DEFAULT_REFINE_PROMPT;
+                    const currentRefinePrompt = editingRefinePrompt ?? savedRefinePrompt;
+                    const isRefineDefault = !config.refinePrompt?.trim();
+                    const isRefineModified = editingRefinePrompt !== null && editingRefinePrompt !== savedRefinePrompt;
+                    return (
+                        <div className="menu-group">
+                            <div className="menu-item">
+                                <MemorySettingsIcon icon={Sparkles} color={BINDING_ACCENTS.memory} />
+                                <div className="menu-label-group">
+                                    <span className="menu-label">长期记忆手动提炼提示词</span>
+                                    <span className="menu-desc">
+                                        变量：{"{{char}}"} 角色、{"{{memories}}"} 勾选的长期记忆
+                                    </span>
+                                </div>
+                                {!isRefineDefault && (
+                                    <div className="menu-right">
+                                        <button onClick={handleResetRefinePrompt} className="menu-label menu-label-danger ts-12 underline">
+                                            恢复默认
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                            <div className="px-4 pb-4 flex flex-col gap-3">
+                                <textarea
+                                    value={currentRefinePrompt}
+                                    onChange={e => setEditingRefinePrompt(e.target.value)}
+                                    className="ui-textarea w-full min-h-[200px] ts-14 leading-relaxed resize-y"
+                                />
+                                {isRefineModified && (
+                                    <button
+                                        onClick={handleSaveRefinePrompt}
+                                        className="ui-btn ui-btn-primary p-2.5 w-full"
+                                    >
+                                        <Sparkles size={14} className="mr-1.5" /> 保存提炼提词配置
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    );
+                })()}
             </div>
         );
     }

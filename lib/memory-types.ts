@@ -34,6 +34,7 @@ export type MemoryConfig = {
     summarizationPrompt: string;            // user-editable prompt template for memory summarization
     coreMemoryPrompt: string;               // user-editable prompt template for core-memory extraction
     vnSummaryPrompt: string;                // user-editable prompt for VN chapter summarization
+    refinePrompt?: string;                  // user-editable prompt for manually refining selected long-term memories (undefined = default)
     shortTermAllowedSources?: {
         chat?: boolean;
         group_chat?: boolean;
@@ -107,6 +108,25 @@ export const DEFAULT_CORE_MEMORY_PROMPT = `你是一个核心记忆整理助手�
 - 不要使用 JSON、列表符号、标题或格式标记
 
 核心记忆总结：`;
+
+/**
+ * Default refine prompt: manually condense selected long-term memories into one.
+ * Placeholders: {{char}}, {{memories}}
+ */
+export const DEFAULT_REFINE_PROMPT = `你是记忆提炼助手。请把以下关于{{char}}的多条长期记忆，高度概括成一段简短的记忆。
+
+原始记忆（按时间从早到晚）：
+{{memories}}
+
+要求：
+- 只保留主线：关系走向、重要事件、关键承诺、用户的重要个人信息
+- 省略具体过程、对话细节、日常琐事和重复内容
+- 用自己的话重新概括，不要逐条复述或拼接原文
+- 篇幅明显短于原文，不超过原文总字数的三分之一，最多 150 字
+- 信息冲突时以较晚的记录为准，不要编造
+- 第三人称，写成一段话，不要列表、标题或格式标记
+
+提炼结果：`;
 
 export const DEFAULT_MEMORY_CONFIG: MemoryConfig = {
     autoSummarizeEnabled: true,
