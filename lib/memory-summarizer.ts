@@ -3,7 +3,7 @@
 // Trigger: every N events (configurable). Short-term events are NOT deleted after summarization.
 
 import type { MemoryEntry } from "./memory-types";
-import { DEFAULT_SUMMARIZATION_PROMPT } from "./memory-types";
+import { DEFAULT_SUMMARIZATION_PROMPT, isMemoryHidden } from "./memory-types";
 import {
     loadMemoryConfig,
     loadMemoryEntries,
@@ -171,7 +171,8 @@ export async function runSummarizationPipeline(
     resetEventCounter(characterId);
 
     // Enforce long-term limit
-    const allLongTerm = await loadMemoryEntries(characterId);
+    // 隐藏的记忆是用户存档，不计入上限、也不会被自动清理
+    const allLongTerm = (await loadMemoryEntries(characterId)).filter(entry => !isMemoryHidden(entry));
     if (allLongTerm.length > config.maxLongTermEntries) {
         const excess = allLongTerm.slice(0, allLongTerm.length - config.maxLongTermEntries);
         await deleteMemoryEntries(excess.map(e => e.id));

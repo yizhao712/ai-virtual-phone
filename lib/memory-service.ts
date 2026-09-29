@@ -2,6 +2,7 @@
 // High-level memory orchestration: retrieve long-term memories for prompt injection.
 
 import type { MemoryConfig, MemoryEntry } from "./memory-types";
+import { isMemoryHidden } from "./memory-types";
 import { loadMemoryEntriesByType } from "./memory-storage";
 import { resolveAuxiliaryApiConfig } from "./settings-storage";
 import { generateEmbedding, resolveEmbeddingModel, cosineSimilarity } from "./memory-embedding";
@@ -20,7 +21,8 @@ export async function retrieveMemoriesForPrompt(
     currentContext: string,
     config: MemoryConfig
 ): Promise<MemoryEntry[]> {
-    const longTermEntries = await loadMemoryEntriesByType(characterId, "long_term");
+    const longTermEntries = (await loadMemoryEntriesByType(characterId, "long_term"))
+        .filter(entry => !isMemoryHidden(entry));
     if (longTermEntries.length === 0 || !currentContext.trim()) return [];
 
     const budget = config.longTermTokenBudget;

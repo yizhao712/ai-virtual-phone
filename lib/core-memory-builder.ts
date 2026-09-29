@@ -1,5 +1,5 @@
 import type { MemoryEntry } from "./memory-types";
-import { DEFAULT_CORE_MEMORY_PROMPT } from "./memory-types";
+import { DEFAULT_CORE_MEMORY_PROMPT, isMemoryHidden } from "./memory-types";
 import {
     loadMemoryConfig,
     loadMemoryEntriesByType,
@@ -40,7 +40,8 @@ export async function runCoreMemoryPipeline(
     options?: { force?: boolean },
 ): Promise<{ success: boolean; error?: string; rebuiltCount?: number }> {
     const config = loadMemoryConfig();
-    const allLongTermEntries = await loadMemoryEntriesByType(characterId, "long_term");
+    const allLongTermEntries = (await loadMemoryEntriesByType(characterId, "long_term"))
+        .filter(entry => !isMemoryHidden(entry));
 
     if (allLongTermEntries.length === 0) {
         return { success: false, error: "没有可用于总结核心记忆的长期记忆" };

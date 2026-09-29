@@ -9,6 +9,7 @@ import {
     loadBindingConfig,
     loadWorldBooks,
     saveBindingConfig,
+    saveWorldBooks,
     setCharacterBinding,
 } from "@/lib/settings-storage";
 import type { ApiConfig, BindingConfig, BindingSlot, WorldBookConfig } from "@/lib/settings-types";
@@ -54,6 +55,7 @@ export function QuickActionFloat() {
     const [config, setConfig] = useState<BindingConfig>(EMPTY_BINDING_CONFIG);
     const [apiConfigs, setApiConfigs] = useState<ApiConfig[]>([]);
     const [worldBooks, setWorldBooks] = useState<WorldBookConfig[]>([]);
+    const [expandedWorldBookId, setExpandedWorldBookId] = useState<string | null>(null);
     const [characters, setCharacters] = useState<Character[]>([]);
     const [floatingPosition, setFloatingPosition] = useState<FloatingPosition | null>(null);
     const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null);
@@ -62,6 +64,8 @@ export function QuickActionFloat() {
     const floatingButtonRef = useRef<HTMLButtonElement | null>(null);
     const floatingDragRef = useRef<FloatingDragState | null>(null);
     const suppressFloatingClickRef = useRef(false);
+    const worldBookPressTimerRef = useRef<number | null>(null);
+    const worldBookLongPressedRef = useRef(false);
 
     const reloadData = useCallback(() => {
         const nextCharacters = loadCharacters();
@@ -192,6 +196,46 @@ export function QuickActionFloat() {
         updateWorldBooks(next);
     }, [selectedWorldBookIds, updateWorldBooks]);
 
+    // 条目开关直接改世界书本身的 disable（每本世界书只挂一个角色，等同按角色区分）
+    const toggleWorldBookEntry = useCallback((worldBookId: string, entryUid: string) => {
+        const next = worldBooks.map(book => book.id !== worldBookId ? book : {
+            ...book,
+            updatedAt: Date.now(),
+            entries: book.entries.map(entry => entry.uid === entryUid ? { ...entry, disable: !entry.disable } : entry),
+        });
+        setWorldBooks(next);
+        saveWorldBooks(next);
+    }, [worldBooks]);
+
+    const cancelWorldBookLongPress = useCallback(() => {
+        if (worldBookPressTimerRef.current !== null) {
+            window.clearTimeout(worldBookPressTimerRef.current);
+            worldBookPressTimerRef.current = null;
+        }
+    }, []);
+
+    useEffect(() => cancelWorldBookLongPress, [cancelWorldBookLongPress]);
+
+    // 长按世界书：启用/取消整本；松手后紧跟的 click 由 handleWorldBookClick 吞掉
+    const startWorldBookLongPress = useCallback((worldBookId: string) => {
+        cancelWorldBookLongPress();
+        worldBookLongPressedRef.current = false;
+        worldBookPressTimerRef.current = window.setTimeout(() => {
+            worldBookPressTimerRef.current = null;
+            worldBookLongPressedRef.current = true;
+            toggleWorldBook(worldBookId);
+            navigator.vibrate?.(15);
+        }, 500);
+    }, [cancelWorldBookLongPress, toggleWorldBook]);
+
+    const handleWorldBookClick = useCallback((worldBookId: string) => {
+        if (worldBookLongPressedRef.current) {
+            worldBookLongPressedRef.current = false;
+            return;
+        }
+        setExpandedWorldBookId(prev => prev === worldBookId ? null : worldBookId);
+    }, []);
+
     function getFloatingButtonBounds(button: HTMLButtonElement) {
         const parent = button.offsetParent instanceof HTMLElement ? button.offsetParent : null;
         const parentRect = parent?.getBoundingClientRect() ?? {
@@ -275,6 +319,8 @@ export function QuickActionFloat() {
         : inheritedWorldBookNames.length > 0
             ? `继承全局：${inheritedWorldBookNames.join("、")}`
             : "继承全局";
+    const expandedWorldBook = worldBooks.find(book => book.id === expandedWorldBookId) || null;
+    const expandedEntries = expandedWorldBook?.entries ?? [];
     const popoverStyle: CSSProperties | undefined = popoverPosition
         ? { left: popoverPosition.left, top: popoverPosition.top }
         : undefined;
@@ -417,6 +463,8 @@ export function QuickActionFloat() {
                             {worldBooks.length === 0 ? (
                                 <div className="quick-action-empty">暂无世界书</div>
                             ) : (
+                                <>
+                                <div className="quick-action-empty">单击查看条目 · 长按启用/取消整本</div>
                                 <div className="quick-action-chip-grid">
                                     {worldBooks.map(book => {
                                         const selected = selectedWorldBookIds.includes(book.id);
@@ -426,8 +474,15 @@ export function QuickActionFloat() {
                                                 key={book.id}
                                                 className="quick-action-chip"
                                                 data-selected={selected}
+                                                data-expanded={expandedWorldBookId === book.id ? "" : undefined}
                                                 disabled={characterDisabled}
-                                                onClick={() => toggleWorldBook(book.id)}
+                                                style={{ WebkitTouchCallout: "none", userSelect: "none" }}
+                                                onPointerDown={() => startWorldBookLongPress(book.id)}
+                                                onPointerUp={cancelWorldBookLongPress}
+                                                onPointerLeave={cancelWorldBookLongPress}
+                                                onPointerCancel={cancelWorldBookLongPress}
+                                                onContextMenu={event => event.preventDefault()}
+                                                onClick={() => handleWorldBookClick(book.id)}
                                             >
                                                 <span>{book.name}</span>
                                                 {selected ? <Check size={14} /> : null}
@@ -435,6 +490,30 @@ export function QuickActionFloat() {
                                         );
                                     })}
                                 </div>
+                                {expandedWorldBook ? (
+                                    <div className="quick-action-option-list">
+                                        <div className="quick-action-section-heading">
+                                            <span>{expandedWorldBook.name} · 条目</span>
+                                            <small>{expandedEntries.filter(entry => !entry.disable).length}/{expandedEntries.length} 已启用</small>
+                                        </div>
+                                        {expandedEntries.length === 0 ? (
+                                            <div className="quick-action-empty">这本世界书没有条目</div>
+                                        ) : expandedEntries.map(entry => (
+                                            <button
+                                                type="button"
+                                                key={entry.uid}
+                                                className="quick-action-option"
+                                                data-selected={!entry.disable}
+                                                disabled={characterDisabled}
+                                                onClick={() => toggleWorldBookEntry(expandedWorldBook.id, entry.uid)}
+                                            >
+                                                <span>{entry.comment || "无标题条目"}</span>
+                                                {!entry.disable ? <Check size={15} /> : null}
+                                            </button>
+                                        ))}
+                                    </div>
+                                ) : null}
+                                </>
                             )}
                         </section>
                     </div>

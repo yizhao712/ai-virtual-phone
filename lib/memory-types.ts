@@ -16,6 +16,11 @@ export type MemoryEntry = {
     metadata?: Record<string, unknown>;
 };
 
+/** 用户手动隐藏的长期记忆：仅作存档，不注入给角色、不参与核心记忆总结 */
+export function isMemoryHidden(entry: MemoryEntry): boolean {
+    return entry.metadata?.hidden === true;
+}
+
 export type MemoryConfig = {
     autoSummarizeEnabled: boolean;          // whether auto-summarization runs after N events
     autoBuildCoreEnabled: boolean;          // whether core memories rebuild after long-term summarization

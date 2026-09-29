@@ -1,14 +1,15 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Eye, EyeOff, Sparkles, RotateCcw, CalendarDays, type LucideIcon } from "lucide-react";
+import { simpleLLMCall } from "@/lib/api-helpers";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
 import { Toggle } from "@/components/ui/form";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 import type { MemoryEntry, MemoryConfig } from "@/lib/memory-types";
-import { DEFAULT_CORE_MEMORY_PROMPT, DEFAULT_SUMMARIZATION_PROMPT } from "@/lib/memory-types";
+import { DEFAULT_CORE_MEMORY_PROMPT, DEFAULT_SUMMARIZATION_PROMPT, isMemoryHidden } from "@/lib/memory-types";
 import {
     loadMemoryConfig,
     saveMemoryConfig,
@@ -45,6 +46,19 @@ const MEMORY_TOKEN_BUDGET_STEP: Record<MemoryBudgetKey, number> = {
     longTermTokenBudget: 1000,
 };
 const MANUAL_MEMORY_CONTENT_LIMIT = 3000;
+const MEMORY_REFINE_PROMPT = `你是一个记忆整理助手。请把以下关于{{char}}的若干条长期记忆提炼合并为一段精简的长期记忆。
+
+长期记忆（按时间从早到晚）：
+{{memories}}
+
+要求：
+- 用第三人称，事实性描述
+- 合并重复信息，保留关键事实：名字、承诺、情感变化、关系里程碑、用户分享的具体信息
+- 信息有冲突时以较晚的记录为准
+- 不要编造原文没有的内容
+- 不要包含格式标记
+
+提炼结果：`;
 // 详情页时间线最多解析渲染的条数：全量历史可能有几万条，
 // 一次性解析+渲染会把 iOS Safari 的单页内存顶爆（灰屏杀页）
 const MEMORY_TIMELINE_ENTRY_CAP = 2000;
@@ -91,6 +105,14 @@ const MEMORY_SOURCE_OPTIONS: Array<{ key: MemorySourceKey; label: string }> = [
     { key: "adventure", label: "地图冒险" },
     { key: "custom_app", label: "自定义应用" },
 ];
+
+type RefineDraft = {
+    sourceIds: string[];
+    content: string;
+    memoryDate: string;
+    /** 重新提炼已有记忆时的目标 id；缺省为新建 */
+    targetId?: string;
+};
 
 type MemoryEditorState = {
     type: MemoryEntry["type"];
@@ -169,6 +191,31 @@ function relativeTime(isoStr: string): string {
     return `${Math.floor(days / 30)}个月前`;
 }
 
+const MEMORY_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+function toLocalDateString(isoStr: string): string {
+    const date = new Date(isoStr);
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+/** 长期记忆的显示/排序日期：优先用户设定的 memoryDate（年月日），否则取 createdAt。
+ *  不直接改 createdAt：核心记忆总结靠它判断哪些记忆还没总结过。 */
+function getMemoryDisplayDate(entry: MemoryEntry): string {
+    const custom = entry.metadata?.memoryDate;
+    if (typeof custom === "string" && MEMORY_DATE_PATTERN.test(custom)) return custom;
+    return toLocalDateString(entry.createdAt);
+}
+
+/** 最新在上，越旧越靠下；同一天内按创建时间倒序 */
+function sortMemoriesByDateDesc(entries: MemoryEntry[]): MemoryEntry[] {
+    return [...entries].sort((a, b) => {
+        const cmp = getMemoryDisplayDate(b).localeCompare(getMemoryDisplayDate(a));
+        return cmp !== 0 ? cmp : b.createdAt.localeCompare(a.createdAt);
+    });
+}
+
 type CharacterMemoryInfo = {
     character: Character;
     longTermCount: number;
@@ -205,6 +252,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [savingMemory, setSavingMemory] = useState(false);
     const [summarizeRangeOpen, setSummarizeRangeOpen] = useState(false);
     const [sourcePickerOpen, setSourcePickerOpen] = useState(false);
+    const [selectedLongTermIds, setSelectedLongTermIds] = useState<string[]>([]);
+    const [refineDraft, setRefineDraft] = useState<RefineDraft | null>(null);
+    const [refining, setRefining] = useState(false);
+    const [dateEditor, setDateEditor] = useState<{ id: string; value: string } | null>(null);
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -302,6 +353,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         if (view === "detail" && selectedCharId) {
             setActiveTab("short");
             setExpandedId(null);
+            setSelectedLongTermIds([]);
+            setRefineDraft(null);
+            setDateEditor(null);
             loadDetailData(selectedCharId);
         }
     }, [view, selectedCharId, loadDetailData]);
@@ -322,6 +376,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         await deleteMemoryEntry(id);
         setCoreEntries(prev => prev.filter(e => e.id !== id));
         setLongTermEntries(prev => prev.filter(e => e.id !== id));
+        setSelectedLongTermIds(prev => prev.filter(itemId => itemId !== id));
         setEntryMenuId(null);
         loadCharacterList();
     };
@@ -330,7 +385,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         if (!selectedCharId) return;
         await deleteCharacterMemoriesByType(selectedCharId, type);
         if (type === "core") setCoreEntries([]);
-        else setLongTermEntries([]);
+        else {
+            setLongTermEntries([]);
+            setSelectedLongTermIds([]);
+        }
         loadCharacterList();
     };
 
@@ -562,8 +620,188 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         }
     };
 
+    // ── Long-term: hide / date / refine ──
+    const updateLongTermEntry = async (entry: MemoryEntry) => {
+        await saveMemoryEntry(entry);
+        setLongTermEntries(prev => prev.map(item => item.id === entry.id ? entry : item));
+    };
+
+    const handleToggleHidden = async (entry: MemoryEntry) => {
+        setEntryMenuId(null);
+        const hidden = !isMemoryHidden(entry);
+        try {
+            await updateLongTermEntry({
+                ...entry,
+                updatedAt: new Date().toISOString(),
+                metadata: { ...(entry.metadata ?? {}), hidden },
+            });
+            showNotice(hidden ? "已隐藏：角色不再读取，也不参与总结" : "已取消隐藏");
+        } catch (error) {
+            showNotice("操作失败: " + String(error));
+        }
+    };
+
+    const openDateEditor = (entry: MemoryEntry) => {
+        setEntryMenuId(null);
+        setDateEditor({ id: entry.id, value: getMemoryDisplayDate(entry) });
+    };
+
+    const handleSaveMemoryDate = async (entry: MemoryEntry) => {
+        if (!dateEditor || !MEMORY_DATE_PATTERN.test(dateEditor.value)) {
+            showNotice("请选择有效日期");
+            return;
+        }
+        try {
+            await updateLongTermEntry({
+                ...entry,
+                metadata: { ...(entry.metadata ?? {}), memoryDate: dateEditor.value },
+            });
+            setDateEditor(null);
+            showNotice("日期已更新");
+        } catch (error) {
+            showNotice("日期保存失败: " + String(error));
+        }
+    };
+
+    const toggleLongTermSelected = (id: string) => {
+        setSelectedLongTermIds(prev => prev.includes(id) ? prev.filter(itemId => itemId !== id) : [...prev, id]);
+    };
+
+    const runRefineGeneration = async (sourceIds: string[]) => {
+        const sources = longTermEntries
+            .filter(entry => sourceIds.includes(entry.id))
+            .sort((a, b) => getMemoryDisplayDate(a).localeCompare(getMemoryDisplayDate(b)));
+        if (sources.length === 0) {
+            showNotice("原始记忆已不存在，无法重新生成");
+            return;
+        }
+        const apiConfig = resolveAuxiliaryApiConfig("memorySummaryApiConfigId");
+        if (!apiConfig) {
+            showNotice("未配置记忆总结 API（请在绑定配置 → 辅助API绑定中设置）");
+            return;
+        }
+        const memoriesText = sources.map(entry => `- [${getMemoryDisplayDate(entry)}] ${entry.content}`).join("\n");
+        const prompt = MEMORY_REFINE_PROMPT
+            .replace(/\{\{char\}\}/g, () => selectedChar?.name ?? "")
+            .replace("{{memories}}", () => memoriesText);
+        setRefining(true);
+        try {
+            const result = await simpleLLMCall(
+                apiConfig,
+                [{ role: "user", content: prompt }],
+                { temperature: 0.3 },
+            );
+            if (!result.content) {
+                showNotice(result.error || "提炼失败");
+                return;
+            }
+            if (result.wasTruncated) showNotice("提炼结果疑似被截断，可重新生成或手动补全");
+            const content = result.content.trim();
+            setRefineDraft(prev => prev ? { ...prev, content } : prev);
+        } catch (error) {
+            showNotice("提炼失败: " + String(error));
+        } finally {
+            setRefining(false);
+        }
+    };
+
+    const handleStartRefine = () => {
+        const sources = longTermEntries.filter(entry => selectedLongTermIds.includes(entry.id));
+        if (sources.length === 0) {
+            showNotice("请先勾选要提炼的长期记忆");
+            return;
+        }
+        const sourceIds = sources.map(entry => entry.id);
+        const memoryDate = sources.map(getMemoryDisplayDate).sort()[0];
+        setRefineDraft({ sourceIds, content: "", memoryDate });
+        void runRefineGeneration(sourceIds);
+    };
+
+    const openReRefine = (entry: MemoryEntry) => {
+        setEntryMenuId(null);
+        const refinedFrom = entry.metadata?.refinedFrom;
+        const sourceIds = Array.isArray(refinedFrom) ? refinedFrom.map(String) : [];
+        setRefineDraft({ sourceIds, content: entry.content, memoryDate: getMemoryDisplayDate(entry), targetId: entry.id });
+    };
+
+    const handleSaveRefined = async () => {
+        if (!selectedCharId || !refineDraft || refining || savingMemory) return;
+        const content = refineDraft.content.trim();
+        if (!content) {
+            showNotice("提炼内容不能为空");
+            return;
+        }
+        if (content.length > MANUAL_MEMORY_CONTENT_LIMIT) {
+            showNotice(`记忆内容过长，请控制在 ${MANUAL_MEMORY_CONTENT_LIMIT} 字以内`);
+            return;
+        }
+        if (!MEMORY_DATE_PATTERN.test(refineDraft.memoryDate)) {
+            showNotice("请选择有效日期");
+            return;
+        }
+
+        setSavingMemory(true);
+        try {
+            const now = new Date().toISOString();
+            const sources = longTermEntries.filter(entry => refineDraft.sourceIds.includes(entry.id));
+            const target = refineDraft.targetId
+                ? longTermEntries.find(entry => entry.id === refineDraft.targetId)
+                : undefined;
+            const embedding = target && target.content.trim() === content
+                ? target.embedding
+                : await maybeBuildManualMemoryEmbedding("long_term", content);
+            const refined: MemoryEntry = target
+                ? {
+                    ...target,
+                    content,
+                    embedding,
+                    updatedAt: now,
+                    metadata: { ...(target.metadata ?? {}), memoryDate: refineDraft.memoryDate, refinedFrom: refineDraft.sourceIds },
+                }
+                : {
+                    id: createManualMemoryId("long_term"),
+                    characterId: selectedCharId,
+                    sourceApp: "chat",
+                    type: "long_term",
+                    content,
+                    embedding,
+                    importance: Math.max(0.8, ...sources.map(entry => entry.importance ?? 0)),
+                    createdAt: now,
+                    updatedAt: now,
+                    metadata: { origin: "user_refined", memoryDate: refineDraft.memoryDate, refinedFrom: refineDraft.sourceIds },
+                };
+            // 原记忆自动隐藏，仅作存档
+            const archivedSources = sources.map(entry => ({
+                ...entry,
+                updatedAt: now,
+                metadata: { ...(entry.metadata ?? {}), hidden: true, refinedInto: refined.id },
+            }));
+
+            await saveMemoryEntry(refined);
+            for (const entry of archivedSources) await saveMemoryEntry(entry);
+            setLongTermEntries(prev => {
+                const next = prev.map(item => item.id === refined.id
+                    ? refined
+                    : archivedSources.find(source => source.id === item.id) ?? item);
+                return target ? next : [...next, refined];
+            });
+            setRefineDraft(null);
+            setSelectedLongTermIds([]);
+            setExpandedId(refined.id);
+            loadCharacterList();
+            showNotice(target ? "提炼记忆已更新" : `已提炼为 1 条新记忆，原 ${archivedSources.length} 条已隐藏存档`);
+        } catch (error) {
+            console.error("[MemoryBank] Save refined memory failed:", error);
+            showNotice("提炼保存失败: " + String(error));
+        } finally {
+            setSavingMemory(false);
+        }
+    };
+
     const renderMemoryEntries = (type: MemoryEntry["type"], entries: MemoryEntry[], emptyText: string) => {
         const label = type === "core" ? "核心记忆" : "长期记忆";
+        const isLong = type === "long_term";
+        const list = isLong ? sortMemoriesByDateDesc(entries) : entries;
         return (
             <>
                 {entries.length > 0 && (
@@ -582,6 +820,65 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             <Trash2 size={15} strokeWidth={1.8} />
                             <span>清除{label}</span>
                         </button>
+                        {isLong && (
+                            <button
+                                className="mem-entry-add-btn"
+                                disabled={selectedLongTermIds.length === 0 || refining || !!refineDraft}
+                                onClick={handleStartRefine}
+                            >
+                                <Sparkles size={15} strokeWidth={1.8} />
+                                <span>提炼所选{selectedLongTermIds.length > 0 ? `（${selectedLongTermIds.length}）` : ""}</span>
+                            </button>
+                        )}
+                    </div>
+                )}
+                {isLong && refineDraft && (
+                    <div className="g-card memory-report-card">
+                        <div className="mem-report-head">
+                            <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>
+                                [ {refineDraft.targetId ? "重新提炼" : "提炼"} · {refineDraft.sourceIds.length} 条 ]
+                            </span>
+                            <input
+                                type="date"
+                                className="ts-11"
+                                value={refineDraft.memoryDate}
+                                onChange={event => setRefineDraft(prev => prev ? { ...prev, memoryDate: event.target.value } : prev)}
+                            />
+                        </div>
+                        <textarea
+                            className="ts-12 leading-[1.7]"
+                            value={refineDraft.content}
+                            disabled={refining}
+                            placeholder={refining ? "正在提炼…" : "提炼结果，可直接编辑"}
+                            onChange={event => setRefineDraft(prev => prev ? { ...prev, content: event.target.value } : prev)}
+                            style={{ width: "100%", minHeight: 140, padding: 10, borderRadius: 10, border: "1px solid rgba(127,127,127,0.35)", background: "transparent", color: "inherit", font: "inherit", resize: "vertical" }}
+                        />
+                        <div className="mem-entry-toolbar">
+                            <button
+                                className="mem-entry-add-btn"
+                                disabled={refining || savingMemory || refineDraft.sourceIds.length === 0}
+                                onClick={() => void runRefineGeneration(refineDraft.sourceIds)}
+                            >
+                                <RotateCcw size={15} strokeWidth={1.8} />
+                                <span>{refining ? "提炼中…" : "重新生成"}</span>
+                            </button>
+                            <button
+                                className="mem-entry-add-btn"
+                                disabled={refining || savingMemory || !refineDraft.content.trim()}
+                                onClick={() => void handleSaveRefined()}
+                            >
+                                <Check size={15} strokeWidth={1.8} />
+                                <span>{savingMemory ? "保存中…" : "保存"}</span>
+                            </button>
+                            <button
+                                className="mem-entry-clear-btn"
+                                disabled={refining || savingMemory}
+                                onClick={() => setRefineDraft(null)}
+                            >
+                                <X size={15} strokeWidth={1.8} />
+                                <span>取消</span>
+                            </button>
+                        </div>
                     </div>
                 )}
                 {entryMenuId && (
@@ -600,10 +897,11 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         </button>
                     </div>
                 ) : (
-                    entries.map(entry => (
+                    list.map(entry => (
                         <div
                             key={entry.id}
                             className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}`}
+                            style={isLong && isMemoryHidden(entry) ? { opacity: 0.55 } : undefined}
                             onClick={() => {
                                 if (entryMenuId) {
                                     setEntryMenuId(null);
@@ -613,8 +911,42 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             }}
                         >
                             <div className="mem-report-head">
-                                <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>[ DATE: {relativeTime(entry.createdAt)} ]</span>
+                                {isLong ? (
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                                        <input
+                                            type="checkbox"
+                                            aria-label="勾选用于提炼"
+                                            checked={selectedLongTermIds.includes(entry.id)}
+                                            onClick={event => event.stopPropagation()}
+                                            onChange={() => toggleLongTermSelected(entry.id)}
+                                        />
+                                        {dateEditor?.id === entry.id ? (
+                                            <>
+                                                <input
+                                                    type="date"
+                                                    className="ts-11"
+                                                    value={dateEditor.value}
+                                                    onClick={event => event.stopPropagation()}
+                                                    onChange={event => setDateEditor({ id: entry.id, value: event.target.value })}
+                                                />
+                                                <button className="mem-entry-menu-btn" title="保存日期" onClick={event => { event.stopPropagation(); void handleSaveMemoryDate(entry); }}>
+                                                    <Check size={15} />
+                                                </button>
+                                                <button className="mem-entry-menu-btn" title="取消" onClick={event => { event.stopPropagation(); setDateEditor(null); }}>
+                                                    <X size={15} />
+                                                </button>
+                                            </>
+                                        ) : (
+                                            <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>[ DATE: {getMemoryDisplayDate(entry)} ]</span>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <span className="ts-11 text-secondary" style={{ letterSpacing: "1px" }}>[ DATE: {relativeTime(entry.createdAt)} ]</span>
+                                )}
                                 <div className="mem-report-actions">
+                                    {isLong && isMemoryHidden(entry) && (
+                                        <span className="mem-origin-badge">HIDDEN</span>
+                                    )}
                                     <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
                                         {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
                                     </span>
@@ -635,6 +967,24 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                                     <Edit3 size={13} />
                                                     <span>编辑</span>
                                                 </button>
+                                                {isLong && (
+                                                    <>
+                                                        <button onClick={() => void handleToggleHidden(entry)}>
+                                                            {isMemoryHidden(entry) ? <Eye size={13} /> : <EyeOff size={13} />}
+                                                            <span>{isMemoryHidden(entry) ? "取消隐藏" : "隐藏"}</span>
+                                                        </button>
+                                                        <button onClick={() => openDateEditor(entry)}>
+                                                            <CalendarDays size={13} />
+                                                            <span>修改日期</span>
+                                                        </button>
+                                                        {Array.isArray(entry.metadata?.refinedFrom) && (
+                                                            <button onClick={() => openReRefine(entry)}>
+                                                                <Sparkles size={13} />
+                                                                <span>重新提炼</span>
+                                                            </button>
+                                                        )}
+                                                    </>
+                                                )}
                                                 <button
                                                     className="is-danger"
                                                     onClick={() => {
