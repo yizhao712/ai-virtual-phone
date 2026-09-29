@@ -32,6 +32,18 @@ type FloatingDragState = {
 
 const EMPTY_BINDING_CONFIG: BindingConfig = { globalDefaults: {}, characterBindings: [] };
 
+// 世界书点亮状态：绿 = 整本启用且条目全开；粉 = 整本启用但只开了部分条目
+const WORLD_BOOK_FULL_STYLE: CSSProperties = {
+    background: "rgba(52, 199, 89, 0.18)",
+    boxShadow: "inset 0 0 0 1.5px rgba(52, 199, 89, 0.75)",
+    color: "#1f9d45",
+};
+const WORLD_BOOK_PARTIAL_STYLE: CSSProperties = {
+    background: "rgba(255, 105, 180, 0.18)",
+    boxShadow: "inset 0 0 0 1.5px rgba(255, 105, 180, 0.75)",
+    color: "#d63384",
+};
+
 function clampFloatingPosition(value: number, max: number): number {
     return Math.min(Math.max(12, value), max);
 }
@@ -198,14 +210,21 @@ export function QuickActionFloat() {
 
     // 条目开关直接改世界书本身的 disable（每本世界书只挂一个角色，等同按角色区分）
     const toggleWorldBookEntry = useCallback((worldBookId: string, entryUid: string) => {
-        const next = worldBooks.map(book => book.id !== worldBookId ? book : {
-            ...book,
+        const book = worldBooks.find(item => item.id === worldBookId);
+        const target = book?.entries.find(entry => entry.uid === entryUid);
+        if (!book || !target) return;
+        const next = worldBooks.map(item => item.id !== worldBookId ? item : {
+            ...item,
             updatedAt: Date.now(),
-            entries: book.entries.map(entry => entry.uid === entryUid ? { ...entry, disable: !entry.disable } : entry),
+            entries: item.entries.map(entry => entry.uid === entryUid ? { ...entry, disable: !entry.disable } : entry),
         });
         setWorldBooks(next);
         saveWorldBooks(next);
-    }, [worldBooks]);
+        // 在未启用的书里打开条目：自动启用整本，否则条目不会被注入
+        if (target.disable && !selectedWorldBookIds.includes(worldBookId)) {
+            updateWorldBooks([...selectedWorldBookIds, worldBookId]);
+        }
+    }, [worldBooks, selectedWorldBookIds, updateWorldBooks]);
 
     const cancelWorldBookLongPress = useCallback(() => {
         if (worldBookPressTimerRef.current !== null) {
@@ -464,19 +483,23 @@ export function QuickActionFloat() {
                                 <div className="quick-action-empty">暂无世界书</div>
                             ) : (
                                 <>
-                                <div className="quick-action-empty">单击查看条目 · 长按启用/取消整本</div>
+                                <div className="quick-action-empty">单击查看条目 · 长按启用/取消整本 · 绿=整本 · 粉=部分条目</div>
                                 <div className="quick-action-chip-grid">
                                     {worldBooks.map(book => {
                                         const selected = selectedWorldBookIds.includes(book.id);
+                                        const enabledCount = book.entries.filter(entry => !entry.disable).length;
+                                        const partial = selected && enabledCount < book.entries.length;
+                                        const stateStyle = selected ? (partial ? WORLD_BOOK_PARTIAL_STYLE : WORLD_BOOK_FULL_STYLE) : undefined;
                                         return (
                                             <button
                                                 type="button"
                                                 key={book.id}
                                                 className="quick-action-chip"
                                                 data-selected={selected}
+                                                data-partial={partial ? "" : undefined}
                                                 data-expanded={expandedWorldBookId === book.id ? "" : undefined}
                                                 disabled={characterDisabled}
-                                                style={{ WebkitTouchCallout: "none", userSelect: "none" }}
+                                                style={{ WebkitTouchCallout: "none", userSelect: "none", ...stateStyle }}
                                                 onPointerDown={() => startWorldBookLongPress(book.id)}
                                                 onPointerUp={cancelWorldBookLongPress}
                                                 onPointerLeave={cancelWorldBookLongPress}
@@ -484,7 +507,7 @@ export function QuickActionFloat() {
                                                 onContextMenu={event => event.preventDefault()}
                                                 onClick={() => handleWorldBookClick(book.id)}
                                             >
-                                                <span>{book.name}</span>
+                                                <span>{book.name}{partial ? ` ${enabledCount}/${book.entries.length}` : ""}</span>
                                                 {selected ? <Check size={14} /> : null}
                                             </button>
                                         );
@@ -494,7 +517,9 @@ export function QuickActionFloat() {
                                     <div className="quick-action-option-list">
                                         <div className="quick-action-section-heading">
                                             <span>{expandedWorldBook.name} · 条目</span>
-                                            <small>{expandedEntries.filter(entry => !entry.disable).length}/{expandedEntries.length} 已启用</small>
+                                            <small>
+                                                {selectedWorldBookIds.includes(expandedWorldBook.id) ? "已启用" : "未启用"} · {expandedEntries.filter(entry => !entry.disable).length}/{expandedEntries.length} 条目开启
+                                            </small>
                                         </div>
                                         {expandedEntries.length === 0 ? (
                                             <div className="quick-action-empty">这本世界书没有条目</div>
