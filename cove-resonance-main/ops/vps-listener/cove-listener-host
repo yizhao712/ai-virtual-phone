@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+export DISPLAY=:91
+export HOME=/opt/cove/listener
+export XDG_CONFIG_HOME=/opt/cove/listener/.config
+export XDG_CACHE_HOME=/opt/cove/listener/.cache
+export XDG_RUNTIME_DIR=/run/cove-listener
+
+mkdir -p "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" /opt/cove/listener/logs
+
+cleanup() {
+  jobs -pr | xargs -r kill 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+Xvfb "$DISPLAY" -screen 0 1440x1000x24 -nolisten tcp -ac \
+  >>/opt/cove/listener/logs/xvfb.log 2>&1 &
+for _ in $(seq 1 50); do
+  if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then break; fi
+  sleep 0.1
+done
+
+openbox-session >>/opt/cove/listener/logs/openbox.log 2>&1 &
+x11vnc -display "$DISPLAY" -localhost -rfbport 5901 -forever -shared -nopw -noxdamage \
+  >>/opt/cove/listener/logs/x11vnc.log 2>&1 &
+websockify --web=/usr/share/novnc 127.0.0.1:6080 127.0.0.1:5901 \
+  >>/opt/cove/listener/logs/novnc.log 2>&1 &
+
+google-chrome \
+  --user-data-dir=/opt/cove/listener/profile \
+  --remote-debugging-address=127.0.0.1 \
+  --remote-debugging-port=9222 \
+  --restore-last-session \
+  --no-first-run \
+  --no-default-browser-check \
+  --password-store=basic \
+  --disable-session-crashed-bubble \
+  --disable-dev-shm-usage \
+  --lang=zh-CN \
+  https://chatgpt.com/ \
+  >>/opt/cove/listener/logs/chrome.log 2>&1 &
+chrome_pid=$!
+wait "$chrome_pid"

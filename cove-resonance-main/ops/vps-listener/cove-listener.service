@@ -1,0 +1,26 @@
+[Unit]
+Description=Cove Listener persistent ChatGPT browser host
+After=network-online.target cove-bridge.service
+Wants=network-online.target
+Requires=cove-bridge.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+RuntimeDirectory=cove-listener
+RuntimeDirectoryMode=0700
+Environment=TZ=Asia/Shanghai
+ExecStart=/usr/local/bin/cove-listener-host
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/cove/listener /run/cove-listener
+
+[Install]
+WantedBy=multi-user.target
