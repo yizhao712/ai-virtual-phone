@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useContext } from "react";
-import { Plus, RefreshCw, Rss, AlertCircle, FileEdit, Trash2, X, Check } from "lucide-react";
+import { Plus, RefreshCw, Rss, AlertCircle, FileEdit, Trash2, X, Check, Copy, GripVertical } from "lucide-react";
 import { SettingsContext } from "../phone-settings-app";
 import type { ApiConfig } from "@/lib/settings-types";
 import { loadApiConfigs, removeApiConfigReferences, saveApiConfigs } from "@/lib/settings-storage";
@@ -37,6 +37,8 @@ export function ApiSettings() {
     const [editingId, setEditingId] = useState<string | null>(null);
     const [isNewConfig, setIsNewConfig] = useState(false);
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+    // 拖动排序：按住右侧把手上下拖，松手按位移换算目标位置
+    const [drag, setDrag] = useState<{ id: string; startY: number; offset: number; rowH: number } | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
 
     // Testing and Fetching states
@@ -106,6 +108,30 @@ export function ApiSettings() {
         const newTestResults = { ...testResult };
         delete newTestResults[id];
         setTestResult(newTestResults);
+    };
+
+    // 复制：生成「原名 副本」，插在原配置下面（Key / 地址 / 模型一并复制）
+    const duplicateConfig = (id: string) => {
+        const index = configs.findIndex(c => c.id === id);
+        if (index < 0) return;
+        const source = configs[index];
+        const copy: ApiConfig = {
+            ...source,
+            id: `config-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: `${source.name || source.defaultModel || source.provider} 副本`,
+        };
+        const next = [...configs];
+        next.splice(index + 1, 0, copy);
+        persist(next);
+    };
+
+    // 换位：数组顺序即显示顺序（悬浮球 API 列表同序）
+    const moveConfig = (fromIndex: number, toIndex: number) => {
+        if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= configs.length || toIndex >= configs.length) return;
+        const next = [...configs];
+        const [item] = next.splice(fromIndex, 1);
+        next.splice(toIndex, 0, item);
+        persist(next);
     };
 
     // Use unified determineBaseUrl from api-helpers
@@ -236,7 +262,25 @@ export function ApiSettings() {
                         <div
                             key={config.id}
                             className="ui-config-card min-w-0 cursor-pointer"
-                            style={{ aspectRatio: "3 / 2", padding: "12px", justifyContent: "space-between" }}
+                            data-api-card=""
+                            style={{
+                                gridColumn: "1 / -1",
+                                width: "100%",
+                                display: "flex",
+                                flexDirection: "row",
+                                alignItems: "center",
+                                justifyContent: "space-between",
+                                gap: 10,
+                                minHeight: 54,
+                                padding: "8px 8px 8px 14px",
+                                ...(drag?.id === config.id ? {
+                                    transform: `translateY(${drag.offset}px)`,
+                                    position: "relative",
+                                    zIndex: 5,
+                                    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                                    transition: "none",
+                                } : { transition: "transform 0.15s" }),
+                            }}
                             role="button"
                             tabIndex={0}
                             aria-label={`编辑 ${config.name || config.provider}`}
@@ -249,11 +293,22 @@ export function ApiSettings() {
                                 }
                             }}
                         >
-                            <div className="min-w-0 flex flex-col gap-1">
-                                <span className="truncate text-[calc(14.4px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">{config.name || config.provider}</span>
-                                <span className="menu-desc truncate">{config.defaultModel || config.provider || "未设置模型"}</span>
+                            <div className="min-w-0 flex-1 flex flex-col gap-0.5">
+                                <span className="truncate text-[calc(14px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">{config.name || config.provider}</span>
+                                <span className="menu-desc truncate !mt-0">{config.defaultModel || config.provider || "未设置模型"}</span>
                             </div>
-                            <div className="flex gap-2 shrink-0 items-center justify-end">
+                            <div className="flex gap-1.5 shrink-0 items-center justify-end">
+                                <button
+                                    type="button"
+                                    title="复制一份"
+                                    onClick={(event) => {
+                                        event.stopPropagation();
+                                        duplicateConfig(config.id);
+                                    }}
+                                    className="ui-link-btn"
+                                >
+                                    <Copy size={17} />
+                                </button>
                                 <button
                                     type="button"
                                     onClick={(event) => {
@@ -273,8 +328,40 @@ export function ApiSettings() {
                                     className="ui-link-btn"
                                     data-variant="danger"
                                 >
-                                    <Trash2 size={18} />
+                                    <Trash2 size={17} />
                                 </button>
+                                <span
+                                    role="button"
+                                    aria-label="按住拖动排序"
+                                    title="按住拖动排序"
+                                    className="ui-link-btn"
+                                    style={{ touchAction: "none", cursor: "grab", padding: "6px 2px", opacity: 0.6 }}
+                                    onClick={(event) => event.stopPropagation()}
+                                    onPointerDown={(event) => {
+                                        event.stopPropagation();
+                                        const card = (event.currentTarget as HTMLElement).closest("[data-api-card]") as HTMLElement | null;
+                                        const rect = card?.getBoundingClientRect();
+                                        const sibling = (card?.nextElementSibling ?? card?.previousElementSibling) as HTMLElement | null;
+                                        const siblingRect = sibling?.getBoundingClientRect();
+                                        const rowH = rect && siblingRect ? Math.abs(siblingRect.top - rect.top) || rect.height + 8 : (rect?.height ?? 54) + 8;
+                                        event.currentTarget.setPointerCapture(event.pointerId);
+                                        setDrag({ id: config.id, startY: event.clientY, offset: 0, rowH });
+                                    }}
+                                    onPointerMove={(event) => {
+                                        if (!drag || drag.id !== config.id) return;
+                                        setDrag({ ...drag, offset: event.clientY - drag.startY });
+                                    }}
+                                    onPointerUp={() => {
+                                        if (!drag || drag.id !== config.id) return;
+                                        const from = configs.findIndex(c => c.id === config.id);
+                                        const to = Math.max(0, Math.min(configs.length - 1, from + Math.round(drag.offset / drag.rowH)));
+                                        setDrag(null);
+                                        moveConfig(from, to);
+                                    }}
+                                    onPointerCancel={() => setDrag(null)}
+                                >
+                                    <GripVertical size={18} />
+                                </span>
                             </div>
                         </div>
                     ))}
