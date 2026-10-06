@@ -257,7 +257,7 @@ export function ApiSettings() {
                     </button>
                 </div>
             ) : (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-2">
                     {configs.map(config => (
                         <div
                             key={config.id}
@@ -275,7 +275,7 @@ export function ApiSettings() {
                                 padding: "8px 8px 8px 14px",
                                 ...(drag?.id === config.id ? {
                                     transform: `translateY(${drag.offset}px)`,
-                                    position: "relative",
+                                    position: "relative" as const,
                                     zIndex: 5,
                                     boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
                                     transition: "none",
