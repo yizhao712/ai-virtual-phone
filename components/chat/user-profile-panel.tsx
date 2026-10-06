@@ -29,7 +29,7 @@ import { disableOfflinePush, enableOfflinePush, getOfflinePushState, isShellEnvi
 import { isPersonalPushCloudActive, setPersonalPushCloudScheduled } from "@/lib/personal-push-cloud";
 import { loadPushCloudScheduled, savePushCloudScheduled } from "@/lib/cloud-deploy-status";
 import { armIdleReconnectBailout, armTimedWakeBailout, cancelBailoutKey, cancelBailoutPrefix } from "@/lib/push-bailout-client";
-import { loadTimedWakeSchedules, makeTimedWakeId, removeTimedWakeSchedule, saveTimedWakeSchedule, type TimedWakeSchedule } from "@/lib/timed-wake-storage";
+import { loadTimedWakeSchedules, makeTimedWakeId, removeTimedWakeSchedule, saveTimedWakeSchedule, loadPausedTimedWakeSchedules, pauseTimedWakeSchedule, resumeTimedWakeSchedule, removePausedTimedWakeSchedule, type TimedWakeSchedule, type PausedTimedWakeSchedule } from "@/lib/timed-wake-storage";
 import { IDLE_RECONNECT_MAX_CONSECUTIVE, loadIdleReconnectRules, removeIdleReconnectRule, upsertIdleReconnectRule, type IdleReconnectRule } from "@/lib/idle-reconnect-storage";
 import { addChatContact, createOrGetSession } from "@/lib/chat-storage";
 import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
@@ -46,6 +46,8 @@ import {
     MessageSquare,
     MessageSquareDashed,
     Palette,
+    Pause,
+    Play,
     Puzzle,
     Keyboard,
     Vibrate,
@@ -1200,6 +1202,7 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
     const [quietStart, setQuietStart] = useState(storedQuiet ? `${storedQuiet[1].padStart(2, "0")}:${storedQuiet[2]}` : "23:00");
     const [quietEnd, setQuietEnd] = useState(storedQuiet ? `${storedQuiet[3].padStart(2, "0")}:${storedQuiet[4]}` : "08:00");
     const [timedSchedules, setTimedSchedules] = useState<TimedWakeSchedule[]>([]);
+    const [pausedSchedules, setPausedSchedules] = useState<PausedTimedWakeSchedule[]>([]);
     const [idleRules, setIdleRules] = useState<IdleReconnectRule[]>([]);
     const [tmMode, setTmMode] = useState<"idle" | "once">("idle");
     const [tmCharId, setTmCharId] = useState("");
@@ -1212,6 +1215,7 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
 
     const refreshTimedSchedules = () => {
         setTimedSchedules(loadTimedWakeSchedules().slice().sort((a, b) => a.fireAt - b.fireAt));
+        setPausedSchedules(loadPausedTimedWakeSchedules().slice().sort((a, b) => a.pausedAt - b.pausedAt));
         setIdleRules(loadIdleReconnectRules().slice().sort((a, b) => a.createdAt - b.createdAt));
     };
 
@@ -1336,6 +1340,32 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
     const handleDeleteTimedMsg = (schedule: TimedWakeSchedule) => {
         removeTimedWakeSchedule(schedule.id);
         cancelBailoutKey(`timedwake:${schedule.id}`);
+        refreshTimedSchedules();
+    };
+
+    // 暂停：移出生效列表 + 取消云端兜底推送，保留剩余时长
+    const handlePauseTimedMsg = (schedule: TimedWakeSchedule) => {
+        if (!pauseTimedWakeSchedule(schedule.id)) return;
+        cancelBailoutKey(`timedwake:${schedule.id}`);
+        setTmHint("已暂停，点「启用」按剩余时间继续。");
+        refreshTimedSchedules();
+    };
+
+    // 启用：按剩余时长重新排期，并重新预约离线推送
+    const handleResumeTimedMsg = async (schedule: PausedTimedWakeSchedule) => {
+        if (tmBusy) return;
+        const resumed = resumeTimedWakeSchedule(schedule.id);
+        if (!resumed) return;
+        refreshTimedSchedules();
+        setTmBusy(true);
+        setTmHint("已重新启用，正在预约离线推送...");
+        const armResult = await armTimedWakeBailout(resumed);
+        setTmBusy(false);
+        setTmHint(armResult.ok ? "已重新启用，离线推送已预约。" : `已重新启用本地定时，但离线推送未预约成功：${armResult.reason}`);
+    };
+
+    const handleDeletePausedTimedMsg = (schedule: PausedTimedWakeSchedule) => {
+        removePausedTimedWakeSchedule(schedule.id);
         refreshTimedSchedules();
     };
 
@@ -1587,7 +1617,53 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                             <span className="menu-label">{charName} · {formatFireAt(schedule.fireAt)}</span>
                                             <span className="menu-desc" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>固定时间后主动来找你</span>
                                         </div>
-                                        <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeleteTimedMsg(schedule)}>删除</button>
+                                        <div className="menu-right flex items-center gap-2">
+                                            <button
+                                                className="ui-btn ui-btn-outline py-1 px-3 ts-12"
+                                                style={{ whiteSpace: "nowrap" }}
+                                                onClick={() => handlePauseTimedMsg(schedule)}
+                                                disabled={tmBusy}
+                                                title="暂停：暂时中止定时，点启用后按剩余时间继续"
+                                            >
+                                                <Pause size={14} /> 暂停
+                                            </button>
+                                            <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeleteTimedMsg(schedule)}>删除</button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </>
+                )}
+                {pausedSchedules.length > 0 && (
+                    <>
+                        <p className="menu-group-desc mx-2">已暂停</p>
+                        <div className="menu-group">
+                            {pausedSchedules.map(schedule => {
+                                const charName = loadCharacters().find(c => c.id === schedule.characterId)?.name ?? "未知角色";
+                                const remainMs = schedule.remainingMs;
+                                const remainLabel = remainMs >= 86_400_000
+                                    ? `剩余 ${Math.round(remainMs / 86_400_000 * 10) / 10} 天`
+                                    : remainMs >= 3_600_000
+                                        ? `剩余 ${Math.round(remainMs / 3_600_000 * 10) / 10} 小时`
+                                        : `剩余 ${Math.round(remainMs / 60_000)} 分钟`;
+                                return (
+                                    <div key={schedule.id} className="menu-item">
+                                        <div className="menu-label-group" style={{ minWidth: 0, flex: 1 }}>
+                                            <span className="menu-label">{charName} · {remainLabel}</span>
+                                            <span className="menu-desc" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>已暂停，点启用按剩余时间继续</span>
+                                        </div>
+                                        <div className="menu-right flex items-center gap-2">
+                                            <button
+                                                className="ui-btn ui-btn-outline py-1 px-3 ts-12"
+                                                style={{ whiteSpace: "nowrap" }}
+                                                onClick={() => void handleResumeTimedMsg(schedule)}
+                                                disabled={tmBusy}
+                                            >
+                                                <Play size={14} /> 启用
+                                            </button>
+                                            <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeletePausedTimedMsg(schedule)}>删除</button>
+                                        </div>
                                     </div>
                                 );
                             })}

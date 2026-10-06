@@ -68,6 +68,15 @@ export function QuickActionFloat() {
     const [apiConfigs, setApiConfigs] = useState<ApiConfig[]>([]);
     const [worldBooks, setWorldBooks] = useState<WorldBookConfig[]>([]);
     const [expandedWorldBookId, setExpandedWorldBookId] = useState<string | null>(null);
+    // API 区折叠状态，记在本地，下次打开保持
+    const [apiCollapsed, setApiCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("quick-action-api-collapsed") === "1");
+    const toggleApiCollapsed = useCallback(() => {
+        setApiCollapsed(prev => {
+            const next = !prev;
+            try { window.localStorage.setItem("quick-action-api-collapsed", next ? "1" : "0"); } catch { /* ignore */ }
+            return next;
+        });
+    }, []);
     const [characters, setCharacters] = useState<Character[]>([]);
     const [floatingPosition, setFloatingPosition] = useState<FloatingPosition | null>(null);
     const [popoverPosition, setPopoverPosition] = useState<PopoverPosition | null>(null);
@@ -425,9 +434,18 @@ export function QuickActionFloat() {
 
                         <section className="quick-action-section" data-disabled={characterDisabled ? "" : undefined}>
                             <div className="quick-action-section-heading">
-                                <span><Code2 size={16} />API</span>
+                                <button
+                                    type="button"
+                                    onClick={toggleApiCollapsed}
+                                    aria-expanded={!apiCollapsed}
+                                    style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "none", border: "none", padding: 0, color: "inherit", font: "inherit", cursor: "pointer" }}
+                                >
+                                    <Code2 size={16} />API
+                                    <ChevronDown size={14} style={{ transform: apiCollapsed ? "rotate(-90deg)" : "none", transition: "transform 0.15s" }} />
+                                </button>
                                 {currentSlot.apiConfigId ? <small>{itemName(apiConfigs, currentSlot.apiConfigId)}</small> : <small>{scope === "global" ? "未设置" : "继承"}</small>}
                             </div>
+                            {!apiCollapsed ? (
                             <div className="quick-action-option-list">
                                 <button
                                     type="button"
@@ -455,6 +473,7 @@ export function QuickActionFloat() {
                                     </button>
                                 ))}
                             </div>
+                            ) : null}
                         </section>
 
                         <section className="quick-action-section" data-disabled={characterDisabled ? "" : undefined}>
