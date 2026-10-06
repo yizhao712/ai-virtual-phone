@@ -65,7 +65,7 @@ const imageGenerationIconStyle = { "--icon-color": "#0EA5E9" } as CSSProperties;
 type Status = { success: boolean; message: string };
 
 // ── 生图方案：整套参数存为命名方案，一键切换（角色参考图、图床为全局设置，不随方案切换）──
-type ImageGenSchemeData = Omit<ImageGenerationSettingsType, "characterReferences" | "imageHosting">;
+type ImageGenSchemeData = Pick<ImageGenerationSettingsType, "apiKey" | "baseUrl" | "model" | "size" | "quality" | "extraPrompt">;
 type ImageGenScheme = { id: string; name: string; data: ImageGenSchemeData; updatedAt: number };
 const IMAGE_GEN_SCHEMES_KEY = "ai_phone_image_gen_schemes_v1";
 
@@ -90,10 +90,15 @@ function saveImageGenSchemes(schemes: ImageGenScheme[], activeId: string | null)
 }
 
 function snapshotImageGenSettings(s: ImageGenerationSettingsType): ImageGenSchemeData {
-    const copy = JSON.parse(JSON.stringify(s)) as Partial<ImageGenerationSettingsType>;
-    delete copy.characterReferences;
-    delete copy.imageHosting;
-    return copy as ImageGenSchemeData;
+    // 只取 OpenAI 模式参数；服务商、请求方式、NovelAI 设置不随预设切换
+    return {
+        apiKey: s.apiKey,
+        baseUrl: s.baseUrl,
+        model: s.model,
+        size: s.size,
+        quality: s.quality,
+        extraPrompt: s.extraPrompt,
+    };
 }
 
 export function ImageGenerationSettings() {
@@ -130,7 +135,7 @@ export function ImageGenerationSettings() {
 
     const activeScheme = schemes.find(item => item.id === activeSchemeId) || null;
     const activeSchemeDirty = activeScheme
-        ? JSON.stringify(snapshotImageGenSettings(settings)) !== JSON.stringify(activeScheme.data)
+        ? JSON.stringify(snapshotImageGenSettings(settings)) !== JSON.stringify(snapshotImageGenSettings({ ...settings, ...activeScheme.data } as ImageGenerationSettingsType))
         : false;
 
     const handleSaveNewScheme = () => {
@@ -160,7 +165,7 @@ export function ImageGenerationSettings() {
         if (!target) return;
         const next: ImageGenerationSettingsType = {
             ...settings,
-            ...(JSON.parse(JSON.stringify(target.data)) as ImageGenSchemeData),
+            ...snapshotImageGenSettings({ ...settings, ...target.data } as ImageGenerationSettingsType),
         };
         setSettings(next);
         saveImageGenerationSettings(next);
@@ -441,16 +446,17 @@ export function ImageGenerationSettings() {
                     </Select>
                 </div>
 
-                {/* 生图方案：整套参数存为命名方案，点击切换 */}
+                {/* OpenAI 生图预设：仅 OpenAI 模式显示，点击切换 */}
+                {settings.provider !== "novelai" && (
                 <div className="flex flex-col gap-2 rounded-xl bg-[var(--c-input)]/40 p-3 border border-[var(--c-card-border)]">
                     <div className="flex items-center justify-between gap-2">
-                        <label className="menu-label text-sm font-semibold">生图方案</label>
+                        <label className="menu-label text-sm font-semibold">OpenAI 生图预设</label>
                         <span className="menu-desc !mt-0 truncate">
                             {activeScheme ? `当前：${activeScheme.name}${activeSchemeDirty ? "（已修改）" : ""}` : "未使用方案"}
                         </span>
                     </div>
                     {schemes.length === 0 ? (
-                        <span className="menu-desc">还没有方案。填好下面的参数后，在这里保存为方案，之后点一下就能切换。</span>
+                        <span className="menu-desc">还没有预设。填好下面的 Key、地址、模型、尺寸等参数后，在这里保存为预设，之后点一下就能切换。</span>
                     ) : (
                         <div className="flex flex-col gap-1.5">
                             {schemes.map(scheme => {
@@ -519,7 +525,7 @@ export function ImageGenerationSettings() {
                             type="text"
                             value={schemeNameDraft}
                             onChange={(event) => setSchemeNameDraft(event.target.value)}
-                            placeholder="新方案名称（可留空）"
+                            placeholder="新预设名称（可留空）"
                             className="flex-1"
                         />
                         <button
@@ -528,10 +534,11 @@ export function ImageGenerationSettings() {
                             className="ui-btn ui-btn-soft-action !px-3 !py-2 text-xs flex items-center gap-1 shrink-0"
                         >
                             <Plus size={14} />
-                            保存为新方案
+                            保存为新预设
                         </button>
                     </div>
                 </div>
+                )}
 
                 {settings.provider === "novelai" ? (
                     /* --- NovelAI 配置面板 --- */

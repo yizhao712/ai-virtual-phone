@@ -977,6 +977,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 ...(isLong && isMemoryHidden(entry) ? { opacity: 0.55 } : {}),
                                 ...(memDrag?.id === entry.id ? {
                                     transform: `translateY(${memDrag.offset}px)`,
+                                    animation: "none",
+                                    transition: "none",
                                     position: "relative" as const,
                                     zIndex: 5,
                                     boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
@@ -1035,23 +1037,38 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                         aria-label="按住拖动排序"
                                         title="按住拖动排序"
                                         className="mem-entry-menu-btn"
-                                        style={{ touchAction: "none", cursor: "grab", opacity: 0.6 }}
+                                        style={{ touchAction: "none", cursor: "grab", opacity: 0.6, userSelect: "none", WebkitUserSelect: "none", padding: "6px 6px" }}
                                         onClick={event => event.stopPropagation()}
                                         onPointerDown={event => {
+                                            // 监听整个页面：不依赖指针捕获，滚动容器中途接管也能按最后位置放下
                                             event.stopPropagation();
-                                            event.currentTarget.setPointerCapture(event.pointerId);
-                                            setMemDrag({ id: entry.id, startY: event.clientY, offset: 0 });
+                                            event.preventDefault();
+                                            const id = entry.id;
+                                            const startY = event.clientY;
+                                            let lastY = startY;
+                                            setMemDrag({ id, startY, offset: 0 });
+                                            const onMove = (e: PointerEvent) => {
+                                                lastY = e.clientY;
+                                                setMemDrag({ id, startY, offset: lastY - startY });
+                                            };
+                                            const blockScroll = (e: TouchEvent) => { e.preventDefault(); };
+                                            const cleanup = () => {
+                                                window.removeEventListener("pointermove", onMove);
+                                                window.removeEventListener("pointerup", onEnd);
+                                                window.removeEventListener("pointercancel", onEnd);
+                                                window.removeEventListener("touchmove", blockScroll);
+                                            };
+                                            const onEnd = (e: PointerEvent) => {
+                                                if (e.type === "pointerup") lastY = e.clientY;
+                                                cleanup();
+                                                setMemDrag(null);
+                                                if (Math.abs(lastY - startY) > 4) finishMemoryDrag(id, lastY);
+                                            };
+                                            window.addEventListener("pointermove", onMove);
+                                            window.addEventListener("pointerup", onEnd);
+                                            window.addEventListener("pointercancel", onEnd);
+                                            window.addEventListener("touchmove", blockScroll, { passive: false });
                                         }}
-                                        onPointerMove={event => {
-                                            if (!memDrag || memDrag.id !== entry.id) return;
-                                            setMemDrag({ ...memDrag, offset: event.clientY - memDrag.startY });
-                                        }}
-                                        onPointerUp={event => {
-                                            if (!memDrag || memDrag.id !== entry.id) return;
-                                            setMemDrag(null);
-                                            finishMemoryDrag(entry.id, event.clientY);
-                                        }}
-                                        onPointerCancel={() => setMemDrag(null)}
                                     >
                                         <GripVertical size={16} />
                                     </span>
