@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
-import { AlertCircle, Camera, ChevronDown, Image, Info, Plus, RefreshCw, Sparkles, Trash2, Upload } from "lucide-react";
+import { AlertCircle, Camera, ChevronDown, Image, Info, Plus, RefreshCw, Sparkles, Trash2, Upload, Save, Pencil, Check, X } from "lucide-react";
 import type { ImageGenerationSettings as ImageGenerationSettingsType, NovelAiPreset } from "@/lib/settings-types";
 import {
     DEFAULT_IMAGE_GENERATION_SETTINGS,
@@ -21,6 +21,7 @@ import {
 import { Alert } from "@/components/ui/feedback";
 import { Input, Select, Textarea, Toggle } from "@/components/ui/form";
 import { ConfirmDialog } from "@/components/ui/modal";
+import { kvGet, kvSet } from "@/lib/kv-db";
 import {
     NOVELAI_COMMON_MODELS,
     NOVELAI_NOISE_SCHEDULE_OPTIONS,
@@ -63,6 +64,38 @@ const imageGenerationIconStyle = { "--icon-color": "#0EA5E9" } as CSSProperties;
 
 type Status = { success: boolean; message: string };
 
+// ── 生图方案：整套参数存为命名方案，一键切换（角色参考图、图床为全局设置，不随方案切换）──
+type ImageGenSchemeData = Omit<ImageGenerationSettingsType, "characterReferences" | "imageHosting">;
+type ImageGenScheme = { id: string; name: string; data: ImageGenSchemeData; updatedAt: number };
+const IMAGE_GEN_SCHEMES_KEY = "ai_phone_image_gen_schemes_v1";
+
+function loadImageGenSchemes(): { schemes: ImageGenScheme[]; activeId: string | null } {
+    if (typeof window === "undefined") return { schemes: [], activeId: null };
+    try {
+        const raw = kvGet(IMAGE_GEN_SCHEMES_KEY);
+        const parsed = raw ? JSON.parse(raw) : null;
+        const schemes = Array.isArray(parsed?.schemes)
+            ? (parsed.schemes as ImageGenScheme[]).filter(item => item && typeof item.id === "string" && item.data)
+            : [];
+        const activeId = typeof parsed?.activeId === "string" ? parsed.activeId : null;
+        return { schemes, activeId };
+    } catch {
+        return { schemes: [], activeId: null };
+    }
+}
+
+function saveImageGenSchemes(schemes: ImageGenScheme[], activeId: string | null): void {
+    if (typeof window === "undefined") return;
+    kvSet(IMAGE_GEN_SCHEMES_KEY, JSON.stringify({ schemes, activeId }));
+}
+
+function snapshotImageGenSettings(s: ImageGenerationSettingsType): ImageGenSchemeData {
+    const copy = JSON.parse(JSON.stringify(s)) as Partial<ImageGenerationSettingsType>;
+    delete copy.characterReferences;
+    delete copy.imageHosting;
+    return copy as ImageGenSchemeData;
+}
+
 export function ImageGenerationSettings() {
     const [settings, setSettings] = useState<ImageGenerationSettingsType>(DEFAULT_IMAGE_GENERATION_SETTINGS);
     const [characters, setCharacters] = useState<Character[]>([]);
@@ -76,6 +109,77 @@ export function ImageGenerationSettings() {
     const [naiTokenStatus, setNaiTokenStatus] = useState<Status | null>(null);
     const [testPreviewUrl, setTestPreviewUrl] = useState<string | null>(null);
     const [pendingDeletePresetId, setPendingDeletePresetId] = useState<string | null>(null);
+
+    const [schemes, setSchemes] = useState<ImageGenScheme[]>([]);
+    const [activeSchemeId, setActiveSchemeId] = useState<string | null>(null);
+    const [schemeNameDraft, setSchemeNameDraft] = useState("");
+    const [renamingScheme, setRenamingScheme] = useState<{ id: string; name: string } | null>(null);
+    const [pendingDeleteSchemeId, setPendingDeleteSchemeId] = useState<string | null>(null);
+
+    useEffect(() => {
+        const stored = loadImageGenSchemes();
+        setSchemes(stored.schemes);
+        setActiveSchemeId(stored.activeId);
+    }, []);
+
+    const persistSchemes = (next: ImageGenScheme[], activeId: string | null) => {
+        setSchemes(next);
+        setActiveSchemeId(activeId);
+        saveImageGenSchemes(next, activeId);
+    };
+
+    const activeScheme = schemes.find(item => item.id === activeSchemeId) || null;
+    const activeSchemeDirty = activeScheme
+        ? JSON.stringify(snapshotImageGenSettings(settings)) !== JSON.stringify(activeScheme.data)
+        : false;
+
+    const handleSaveNewScheme = () => {
+        const name = schemeNameDraft.trim() || `方案 ${schemes.length + 1}`;
+        const scheme: ImageGenScheme = {
+            id: `imgscheme-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name,
+            data: snapshotImageGenSettings(settings),
+            updatedAt: Date.now(),
+        };
+        persistSchemes([...schemes, scheme], scheme.id);
+        setSchemeNameDraft("");
+        setStatus({ success: true, message: `已保存为方案「${name}」` });
+    };
+
+    const handleOverwriteScheme = (id: string) => {
+        const target = schemes.find(item => item.id === id);
+        if (!target) return;
+        persistSchemes(schemes.map(item => item.id === id
+            ? { ...item, data: snapshotImageGenSettings(settings), updatedAt: Date.now() }
+            : item), id);
+        setStatus({ success: true, message: `已用当前参数更新方案「${target.name}」` });
+    };
+
+    const handleApplyScheme = (id: string) => {
+        const target = schemes.find(item => item.id === id);
+        if (!target) return;
+        const next: ImageGenerationSettingsType = {
+            ...settings,
+            ...(JSON.parse(JSON.stringify(target.data)) as ImageGenSchemeData),
+        };
+        setSettings(next);
+        saveImageGenerationSettings(next);
+        persistSchemes(schemes, id);
+        setStatus({ success: true, message: `已切换到方案「${target.name}」` });
+    };
+
+    const handleRenameScheme = () => {
+        if (!renamingScheme) return;
+        const name = renamingScheme.name.trim();
+        if (!name) return;
+        persistSchemes(schemes.map(item => item.id === renamingScheme.id ? { ...item, name } : item), activeSchemeId);
+        setRenamingScheme(null);
+    };
+
+    const handleDeleteScheme = (id: string) => {
+        persistSchemes(schemes.filter(item => item.id !== id), activeSchemeId === id ? null : activeSchemeId);
+        setPendingDeleteSchemeId(null);
+    };
 
     useEffect(() => {
         // Sync the ratio hint to the saved size on load, so the hint is present
@@ -335,6 +439,98 @@ export function ImageGenerationSettings() {
                         <option value="server">服务端转发（推荐，可避免跨域报错）</option>
                         <option value="direct">浏览器直连（需接口允许 CORS 跨域）</option>
                     </Select>
+                </div>
+
+                {/* 生图方案：整套参数存为命名方案，点击切换 */}
+                <div className="flex flex-col gap-2 rounded-xl bg-[var(--c-input)]/40 p-3 border border-[var(--c-card-border)]">
+                    <div className="flex items-center justify-between gap-2">
+                        <label className="menu-label text-sm font-semibold">生图方案</label>
+                        <span className="menu-desc !mt-0 truncate">
+                            {activeScheme ? `当前：${activeScheme.name}${activeSchemeDirty ? "（已修改）" : ""}` : "未使用方案"}
+                        </span>
+                    </div>
+                    {schemes.length === 0 ? (
+                        <span className="menu-desc">还没有方案。填好下面的参数后，在这里保存为方案，之后点一下就能切换。</span>
+                    ) : (
+                        <div className="flex flex-col gap-1.5">
+                            {schemes.map(scheme => {
+                                const active = scheme.id === activeSchemeId;
+                                return (
+                                    <div
+                                        key={scheme.id}
+                                        className="flex items-center gap-2 rounded-lg px-2.5 py-1.5"
+                                        style={{
+                                            border: active ? "1.5px solid #0EA5E9" : "1px solid var(--c-card-border)",
+                                            background: active ? "rgba(14,165,233,0.08)" : "transparent",
+                                        }}
+                                    >
+                                        {renamingScheme?.id === scheme.id ? (
+                                            <>
+                                                <Input
+                                                    type="text"
+                                                    value={renamingScheme.name}
+                                                    onChange={(event) => setRenamingScheme({ id: scheme.id, name: event.target.value })}
+                                                    placeholder="方案名称"
+                                                    className="flex-1"
+                                                />
+                                                <button type="button" className="ui-link-btn" title="保存名称" onClick={handleRenameScheme}><Check size={16} /></button>
+                                                <button type="button" className="ui-link-btn" title="取消" onClick={() => setRenamingScheme(null)}><X size={16} /></button>
+                                            </>
+                                        ) : pendingDeleteSchemeId === scheme.id ? (
+                                            <>
+                                                <span className="menu-label flex-1 truncate">删除「{scheme.name}」？</span>
+                                                <button type="button" className="ui-link-btn" data-variant="danger" onClick={() => handleDeleteScheme(scheme.id)}>删除</button>
+                                                <button type="button" className="ui-link-btn" onClick={() => setPendingDeleteSchemeId(null)}>取消</button>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <button
+                                                    type="button"
+                                                    className="flex-1 min-w-0 text-left"
+                                                    style={{ background: "none", border: "none", padding: 0, color: "inherit", font: "inherit", cursor: "pointer" }}
+                                                    title="点击切换到这个方案"
+                                                    onClick={() => handleApplyScheme(scheme.id)}
+                                                >
+                                                    <span className="menu-label truncate block">{scheme.name}</span>
+                                                    <span className="menu-desc truncate block !mt-0">
+                                                        {scheme.data.provider === "novelai" ? "NovelAI" : (scheme.data.model || "未设置模型")}
+                                                    </span>
+                                                </button>
+                                                {active && activeSchemeDirty && (
+                                                    <button type="button" className="ui-link-btn" title="用当前参数覆盖保存到这个方案" onClick={() => handleOverwriteScheme(scheme.id)}>
+                                                        <Save size={16} />
+                                                    </button>
+                                                )}
+                                                <button type="button" className="ui-link-btn" title="改名" onClick={() => setRenamingScheme({ id: scheme.id, name: scheme.name })}>
+                                                    <Pencil size={15} />
+                                                </button>
+                                                <button type="button" className="ui-link-btn" data-variant="danger" title="删除" onClick={() => setPendingDeleteSchemeId(scheme.id)}>
+                                                    <Trash2 size={15} />
+                                                </button>
+                                            </>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                    <div className="flex gap-2">
+                        <Input
+                            type="text"
+                            value={schemeNameDraft}
+                            onChange={(event) => setSchemeNameDraft(event.target.value)}
+                            placeholder="新方案名称（可留空）"
+                            className="flex-1"
+                        />
+                        <button
+                            type="button"
+                            onClick={handleSaveNewScheme}
+                            className="ui-btn ui-btn-soft-action !px-3 !py-2 text-xs flex items-center gap-1 shrink-0"
+                        >
+                            <Plus size={14} />
+                            保存为新方案
+                        </button>
+                    </div>
                 </div>
 
                 {settings.provider === "novelai" ? (

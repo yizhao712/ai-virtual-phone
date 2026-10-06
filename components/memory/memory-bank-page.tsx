@@ -1,8 +1,9 @@
 "use client";
 
 import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
-import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Eye, EyeOff, Sparkles, RotateCcw, CalendarDays, type LucideIcon } from "lucide-react";
+import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Eye, EyeOff, Sparkles, RotateCcw, CalendarDays, GripVertical, type LucideIcon } from "lucide-react";
 import { simpleLLMCall } from "@/lib/api-helpers";
+import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
 import { ConfirmDialog } from "@/components/ui/modal";
 import { MemoryTimeline } from "./memory-timeline";
 import { Toggle } from "@/components/ui/form";
@@ -195,6 +196,36 @@ function getMemoryDisplayDate(entry: MemoryEntry): string {
     return toLocalDateString(entry.createdAt);
 }
 
+// ── 手动排序：按「角色 + 记忆类型」保存 id 顺序，只影响显示，不影响注入与总结 ──
+const MEMORY_ORDER_PREFIX = "ai_phone_memory_manual_order_v1_";
+
+function loadManualOrder(charId: string, type: MemoryEntry["type"]): string[] | null {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = kvGet(`${MEMORY_ORDER_PREFIX}${type}_${charId}`);
+        const parsed = raw ? JSON.parse(raw) : null;
+        return Array.isArray(parsed) && parsed.length > 0 ? parsed.map(String) : null;
+    } catch {
+        return null;
+    }
+}
+
+function saveManualOrder(charId: string, type: MemoryEntry["type"], ids: string[] | null): void {
+    const key = `${MEMORY_ORDER_PREFIX}${type}_${charId}`;
+    if (ids && ids.length > 0) kvSet(key, JSON.stringify(ids));
+    else kvRemove(key);
+}
+
+/** 已排过的按记录顺序；新出现的（没排过的）放最上面，保持原有相对顺序 */
+function applyManualOrder(entries: MemoryEntry[], order: string[]): MemoryEntry[] {
+    const pos = new Map(order.map((id, index) => [id, index]));
+    const fresh = entries.filter(entry => !pos.has(entry.id));
+    const known = entries
+        .filter(entry => pos.has(entry.id))
+        .sort((a, b) => (pos.get(a.id) ?? 0) - (pos.get(b.id) ?? 0));
+    return [...fresh, ...known];
+}
+
 /** 最新在上，越旧越靠下；同一天内按创建时间倒序 */
 function sortMemoriesByDateDesc(entries: MemoryEntry[]): MemoryEntry[] {
     return [...entries].sort((a, b) => {
@@ -244,6 +275,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [refineDraft, setRefineDraft] = useState<RefineDraft | null>(null);
     const [refining, setRefining] = useState(false);
     const [dateEditor, setDateEditor] = useState<{ id: string; value: string } | null>(null);
+    const [memDrag, setMemDrag] = useState<{ id: string; startY: number; offset: number } | null>(null);
+    const [orderRevision, setOrderRevision] = useState(0);
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -812,7 +845,22 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const renderMemoryEntries = (type: MemoryEntry["type"], entries: MemoryEntry[], emptyText: string) => {
         const label = type === "core" ? "核心记忆" : "长期记忆";
         const isLong = type === "long_term";
-        const list = isLong ? sortMemoriesByDateDesc(entries) : entries;
+        const baseList = isLong ? sortMemoriesByDateDesc(entries) : entries;
+        // orderRevision 变化时重新读取手动顺序
+        const manualOrder = orderRevision >= 0 && selectedCharId ? loadManualOrder(selectedCharId, type) : null;
+        const list = manualOrder ? applyManualOrder(baseList, manualOrder) : baseList;
+        const finishMemoryDrag = (draggedId: string, clientY: number) => {
+            const others = Array.from(document.querySelectorAll<HTMLElement>("[data-mem-card]"))
+                .filter(el => el.dataset.memCard !== draggedId);
+            const target = others.filter(el => {
+                const rect = el.getBoundingClientRect();
+                return rect.top + rect.height / 2 < clientY;
+            }).length;
+            const ids = list.map(item => item.id).filter(id => id !== draggedId);
+            ids.splice(target, 0, draggedId);
+            if (selectedCharId) saveManualOrder(selectedCharId, type, ids);
+            setOrderRevision(prev => prev + 1);
+        };
         return (
             <>
                 {entries.length > 0 && (
@@ -831,6 +879,18 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                             <Trash2 size={15} strokeWidth={1.8} />
                             <span>清除{label}</span>
                         </button>
+                        {manualOrder && (
+                            <button
+                                className="mem-entry-clear-btn"
+                                onClick={() => {
+                                    if (selectedCharId) saveManualOrder(selectedCharId, type, null);
+                                    setOrderRevision(prev => prev + 1);
+                                }}
+                            >
+                                <RotateCcw size={15} strokeWidth={1.8} />
+                                <span>{isLong ? "按日期重排" : "恢复默认顺序"}</span>
+                            </button>
+                        )}
                         {isLong && (
                             <button
                                 className="mem-entry-add-btn"
@@ -912,7 +972,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         <div
                             key={entry.id}
                             className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}`}
-                            style={isLong && isMemoryHidden(entry) ? { opacity: 0.55 } : undefined}
+                            data-mem-card={entry.id}
+                            style={{
+                                ...(isLong && isMemoryHidden(entry) ? { opacity: 0.55 } : {}),
+                                ...(memDrag?.id === entry.id ? {
+                                    transform: `translateY(${memDrag.offset}px)`,
+                                    position: "relative" as const,
+                                    zIndex: 5,
+                                    boxShadow: "0 8px 24px rgba(0,0,0,0.18)",
+                                } : {}),
+                            }}
                             onClick={() => {
                                 if (entryMenuId) {
                                     setEntryMenuId(null);
@@ -960,6 +1029,31 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                     )}
                                     <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
                                         {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
+                                    </span>
+                                    <span
+                                        role="button"
+                                        aria-label="按住拖动排序"
+                                        title="按住拖动排序"
+                                        className="mem-entry-menu-btn"
+                                        style={{ touchAction: "none", cursor: "grab", opacity: 0.6 }}
+                                        onClick={event => event.stopPropagation()}
+                                        onPointerDown={event => {
+                                            event.stopPropagation();
+                                            event.currentTarget.setPointerCapture(event.pointerId);
+                                            setMemDrag({ id: entry.id, startY: event.clientY, offset: 0 });
+                                        }}
+                                        onPointerMove={event => {
+                                            if (!memDrag || memDrag.id !== entry.id) return;
+                                            setMemDrag({ ...memDrag, offset: event.clientY - memDrag.startY });
+                                        }}
+                                        onPointerUp={event => {
+                                            if (!memDrag || memDrag.id !== entry.id) return;
+                                            setMemDrag(null);
+                                            finishMemoryDrag(entry.id, event.clientY);
+                                        }}
+                                        onPointerCancel={() => setMemDrag(null)}
+                                    >
+                                        <GripVertical size={16} />
                                     </span>
                                     <div className="mem-entry-menu-wrap">
                                         <button
