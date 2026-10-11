@@ -54,7 +54,7 @@ function clampPos(value: number, max: number): number {
 const MINIMIZE_BTN_STYLE: CSSProperties = {
     position: "absolute",
     top: "calc(var(--safe-area-top, 44px) + 10px)",
-    left: 12,
+    right: 12,
     zIndex: 1000,
     width: 36,
     height: 36,
