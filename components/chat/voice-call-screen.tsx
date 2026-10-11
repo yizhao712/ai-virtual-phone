@@ -565,23 +565,47 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     });
 
     // ── 通话中主动开口：用户沉默时角色先说话，间隔逐次拉长，最多 3 次 ──
+    // 沉默计时只在「真正有人说话」时重置：接通、角色说完一句。
+    // 环境噪音让识别短暂进入 USER_SPEAKING 又回到 IDLE 时不重置（识别会频繁自动重启）。
+    const PROACTIVE_DELAYS_SEC: Array<[number, number]> = [[15, 30], [30, 50], [50, 80]];
+    const silenceAnchorRef = useRef(0);
+    const silenceTargetMsRef = useRef(0);
+    const prevCallStateRef = useRef<CallState>("CONNECTING");
+    const typedTextRef = useRef("");
+    typedTextRef.current = typedText;
+
     useEffect(() => {
+        const prev = prevCallStateRef.current;
+        prevCallStateRef.current = callState;
         if (callState !== "IDLE") return;
-        if (typedText.trim()) return; // 正在打字不算沉默
-        const PROACTIVE_DELAYS_SEC: Array<[number, number]> = [[15, 30], [30, 50], [50, 80]];
-        const index = proactiveCountRef.current;
-        if (index >= PROACTIVE_DELAYS_SEC.length) return; // 达到上限，安静等用户开口
+        if (prev === "USER_SPEAKING") return; // 噪音触发的聆听又回到空闲：不重新计时
+        const index = Math.min(proactiveCountRef.current, PROACTIVE_DELAYS_SEC.length - 1);
         const [min, max] = PROACTIVE_DELAYS_SEC[index];
-        const delayMs = (min + Math.random() * (max - min)) * 1000;
-        const idleSince = Date.now();
-        const timer = setTimeout(() => {
+        silenceAnchorRef.current = Date.now();
+        silenceTargetMsRef.current = (min + Math.random() * (max - min)) * 1000;
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [callState]);
+
+    const callLive = callState !== "CONNECTING" && callState !== "ENDED";
+    useEffect(() => {
+        if (!callLive) return;
+        const timer = setInterval(() => {
             if (stateRef.current !== "IDLE") return;
             if (interimTextRef.current.trim()) return; // 用户正在说话
+            if (typedTextRef.current.trim()) return; // 正在打字不算沉默
+            if (proactiveCountRef.current >= PROACTIVE_DELAYS_SEC.length) return; // 达到上限
+            if (!silenceAnchorRef.current) return;
+            const elapsed = Date.now() - silenceAnchorRef.current;
+            if (elapsed < silenceTargetMsRef.current) return;
             proactiveCountRef.current += 1;
-            void runConversationTurn(undefined, { silenceSec: Math.round((Date.now() - idleSince) / 1000) });
-        }, delayMs);
-        return () => clearTimeout(timer);
-    }, [callState, typedText, runConversationTurn]);
+            // 先占住状态再停识别，避免识别回调把状态拉回 IDLE
+            stateRef.current = "PROCESSING";
+            if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
+            void runConversationTurn(undefined, { silenceSec: Math.round(elapsed / 1000) });
+        }, 1000);
+        return () => clearInterval(timer);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [callLive, runConversationTurn]);
 
     // ── Hangup ──────────────────────────────────────
 
