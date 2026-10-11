@@ -23,6 +23,7 @@ import { armFollowUpBailout, armIdleReconnectBailout, cancelBailoutKey, cancelBa
 import { isWithinPushQuietHours } from "./push-client";
 import {
     IDLE_RECONNECT_MAX_CONSECUTIVE,
+    getIdleReconnectEffectiveMinutes,
     loadIdleReconnectRules,
     markIdleReconnectFired,
     resetIdleReconnectForSession,
@@ -556,7 +557,8 @@ function pollIdleReconnect(now: number) {
         const effectiveConsecutive = rule.lastFiredAt && rule.lastFiredAt > lastUserAt ? rule.consecutiveCount : 0;
         if (effectiveConsecutive >= IDLE_RECONNECT_MAX_CONSECUTIVE) continue;
 
-        const intervalMs = Math.max(1, rule.intervalMinutes) * 60_000;
+        // 忽快忽慢：随机浮动 + 连发放缓，与云端预约用同一个计算函数
+        const intervalMs = getIdleReconnectEffectiveMinutes({ ...rule, consecutiveCount: effectiveConsecutive }) * 60_000;
         const nextDueAt = Math.max(
             lastUserAt + intervalMs,
             rule.lastFiredAt ? rule.lastFiredAt + intervalMs : 0,
