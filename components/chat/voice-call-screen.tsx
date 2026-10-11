@@ -252,8 +252,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             case "CONNECTING": return initiator === "character" ? "来电..." : "正在呼叫...";
             case "IDLE": return isMuted ? "已静音" : "通话中";
             case "USER_SPEAKING": return "正在聆听...";
-            case "PROCESSING": return "对方正在思考... · 可打断";
-            case "AI_SPEAKING": return "对方正在说话... · 可打断";
+            case "PROCESSING": return "对方正在思考...";
+            case "AI_SPEAKING": return "对方正在说话...";
             case "ENDED": return "通话已结束";
         }
     };
@@ -809,6 +809,29 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                     </div>
                 )}
 
+                {/* 打断按钮：对方思考或说话时出现，点一下立刻停下，转为听用户说 */}
+                {(callState === "PROCESSING" || callState === "AI_SPEAKING") && (
+                    <div className="flex justify-center px-5 pt-2">
+                        <button
+                            type="button"
+                            onClick={interruptTurn}
+                            aria-label="打断对方，我来说"
+                            style={{
+                                padding: "10px 24px",
+                                borderRadius: 22,
+                                border: "1px solid rgba(255,255,255,0.45)",
+                                background: "rgba(255,255,255,0.18)",
+                                color: "#fff",
+                                fontSize: 15,
+                                fontWeight: 600,
+                                cursor: "pointer",
+                            }}
+                        >
+                            ✋ 打断，我来说
+                        </button>
+                    </div>
+                )}
+
                 {/* Bottom controls */}
                 <div
                     className="flex justify-center items-center gap-[40px] p-5"
@@ -909,7 +932,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
                             {/* Mic button — input mode toggle with voice-state indicator */}
                             <button
-                                onClick={inputMode === "voice" && (callState === "PROCESSING" || callState === "AI_SPEAKING") ? interruptTurn : handleInputModeToggle}
+                                onClick={handleInputModeToggle}
                                 className="ui-call-mic ui-call-mic-lg"
                                 data-state={
                                     inputMode === "text" ? "text"
