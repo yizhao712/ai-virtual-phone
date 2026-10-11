@@ -35,6 +35,22 @@ function textGrams(text: string): Set<string> {
     return grams;
 }
 
+// 关键词门槛用：太常见的二字词不算「聊到了」
+const COMMON_BIGRAMS = new Set([
+    "我们", "你们", "他们", "她们", "今天", "明天", "昨天", "现在", "一起", "觉得", "喜欢", "什么", "怎么",
+    "没有", "可以", "知道", "一个", "这个", "那个", "就是", "还是", "真的", "时候", "因为", "所以", "但是",
+    "然后", "如果", "已经", "自己", "不是", "这样", "那样", "用户", "对方", "一下", "有点", "感觉", "起来",
+    "出来", "东西", "事情", "问题", "关系", "的时", "了一", "一些", "很多", "非常", "之后", "之前", "为什",
+]);
+
+function informativeGrams(text: string): Set<string> {
+    const grams = textGrams(text);
+    COMMON_BIGRAMS.forEach(gram => grams.delete(gram));
+    // 英文 / 数字只认 3 个字符以上的词（ok、hi 之类不算）
+    grams.forEach(gram => { if (/^[a-z0-9]+$/.test(gram) && gram.length < 3) grams.delete(gram); });
+    return grams;
+}
+
 function excerptArchivedMemory(entry: MemoryEntry, context: string): MemoryEntry {
     const content = entry.content.trim();
     if (content.length <= ARCHIVED_EXCERPT_MAX_CHARS) return entry;
@@ -74,7 +90,9 @@ function excerptArchivedMemory(entry: MemoryEntry, context: string): MemoryEntry
 export async function retrieveMemoriesForPrompt(
     characterId: string,
     currentContext: string,
-    config: MemoryConfig
+    config: MemoryConfig,
+    /** 隐藏记忆召回专用的比对文本（建议只放用户自己最近的消息）；缺省用 currentContext */
+    archivedQueryText?: string,
 ): Promise<MemoryEntry[]> {
     const visible = await retrieveVisibleMemoriesForPrompt(characterId, currentContext, config);
     if (!currentContext.trim() || !config.vectorRecallEnabled) return visible;
@@ -91,15 +109,40 @@ export async function retrieveMemoriesForPrompt(
     if (remaining <= 0) return visible;
 
     try {
-        const recentQuery = currentContext.slice(-ARCHIVED_QUERY_TAIL_CHARS);
+        // 只用用户自己最近说的话比对，避免角色回复里提到的内容反复把同一条记忆召回
+        const recentQuery = (archivedQueryText?.trim() || currentContext).slice(-ARCHIVED_QUERY_TAIL_CHARS);
+
+        // 门槛 1：最近对话与记忆要有「有辨识度」的词重合（常用词、多数记忆都有的词不算）
+        const queryGrams = informativeGrams(recentQuery);
+        if (queryGrams.size === 0) return visible;
+        const memoryGrams = archived.map(entry => informativeGrams(entry.content));
+        const docFreq = new Map<string, number>();
+        memoryGrams.forEach(grams => grams.forEach(gram => {
+            if (queryGrams.has(gram)) docFreq.set(gram, (docFreq.get(gram) ?? 0) + 1);
+        }));
+        const maxDocFreq = Math.max(1, Math.floor(archived.length * 0.3));
+        const keywordHit = archived.map((_, index) => {
+            for (const gram of memoryGrams[index]) {
+                if (queryGrams.has(gram) && (docFreq.get(gram) ?? 0) <= maxDocFreq) return true;
+            }
+            return false;
+        });
+        const candidates = archived.filter((_, index) => keywordHit[index]);
+        // 没有候选就不调用 embedding 接口（省掉多数轮次的向量请求）
+        if (candidates.length === 0) return visible;
+
         const queryEmbedding = await generateEmbedding(recentQuery, embeddingApiConfig);
         if (!queryEmbedding) return visible;
+        // 门槛 2：分数既要过绝对值，也要高于全部隐藏记忆的平均分
+        const allScores = archived.map(entry => cosineSimilarity(queryEmbedding, entry.embedding!));
+        const meanScore = allScores.reduce((sum, score) => sum + score, 0) / allScores.length;
+        const minScore = archived.length >= 4 ? Math.max(ARCHIVED_RECALL_MIN_SCORE, meanScore) : ARCHIVED_RECALL_MIN_SCORE;
         const recalled = archived
-            .map(entry => ({ entry, score: cosineSimilarity(queryEmbedding, entry.embedding!) }))
-            .filter(item => item.score >= ARCHIVED_RECALL_MIN_SCORE)
+            .map((entry, index) => ({ entry, score: allScores[index], hit: keywordHit[index] }))
+            .filter(item => item.hit && item.score >= minScore)
             .sort((a, b) => b.score - a.score)
             .slice(0, ARCHIVED_RECALL_TOP_K)
-            .map(item => excerptArchivedMemory(item.entry, currentContext));
+            .map(item => excerptArchivedMemory(item.entry, recentQuery));
         return [...visible, ...fillByBudget(recalled, remaining)];
     } catch {
         return visible;

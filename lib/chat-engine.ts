@@ -1860,8 +1860,15 @@ export async function buildChatPromptMessages(
         }
     }
 
+    // 隐藏记忆召回只拿用户自己最近 2 条消息比对：角色回复里提到的内容不会反复触发召回
+    const archivedRecallQuery = historyForPrompt
+        .filter(msg => msg.role === "user" && typeof msg.content === "string" && msg.content.trim())
+        .slice(-2)
+        .map(msg => msg.content)
+        .join("\n");
+
     const [memResults, coreResults, musicLocal, musicCloud] = await Promise.all([
-        retrieveMemoriesForPrompt(character.id, wbActivationContext, memConfig).catch(() => null),
+        retrieveMemoriesForPrompt(character.id, wbActivationContext, memConfig, archivedRecallQuery).catch(() => null),
         retrieveCoreMemoriesForPrompt(character.id, memConfig).catch(() => null),
         buildMusicLocalMacro(),
         buildMusicCloudMacro(),
