@@ -16,7 +16,46 @@ import { estimateTokens } from "./token-counter";
  *   3. Over budget + no embedding → time-sorted (newest first), fill until budget
  * Embedding API is resolved from auxiliary binding (global, not per-character).
  */
+// 隐藏（存档）记忆：不固定注入，只在与当前对话相关时按向量相似度取回少量几条
+const ARCHIVED_RECALL_TOP_K = 3;
+const ARCHIVED_RECALL_MIN_SCORE = 0.35;
+
 export async function retrieveMemoriesForPrompt(
+    characterId: string,
+    currentContext: string,
+    config: MemoryConfig
+): Promise<MemoryEntry[]> {
+    const visible = await retrieveVisibleMemoriesForPrompt(characterId, currentContext, config);
+    if (!currentContext.trim() || !config.vectorRecallEnabled) return visible;
+    const embeddingApiConfig = resolveAuxiliaryApiConfig("embeddingApiConfigId");
+    if (!embeddingApiConfig || !resolveEmbeddingModel(embeddingApiConfig)) return visible;
+
+    const archived = (await loadMemoryEntriesByType(characterId, "long_term"))
+        .filter(entry => isMemoryHidden(entry) && entry.embedding && entry.embedding.length > 0);
+    if (archived.length === 0) return visible;
+
+    let usedTokens = 0;
+    for (const entry of visible) usedTokens += estimateTokens(entry.content) + 4;
+    const remaining = config.longTermTokenBudget - usedTokens;
+    if (remaining <= 0) return visible;
+
+    try {
+        const queryEmbedding = await generateEmbedding(currentContext, embeddingApiConfig);
+        if (!queryEmbedding) return visible;
+        const recalled = archived
+            .map(entry => ({ entry, score: cosineSimilarity(queryEmbedding, entry.embedding!) }))
+            .filter(item => item.score >= ARCHIVED_RECALL_MIN_SCORE)
+            .sort((a, b) => b.score - a.score)
+            .slice(0, ARCHIVED_RECALL_TOP_K)
+            .map(item => item.entry);
+        return [...visible, ...fillByBudget(recalled, remaining)];
+    } catch {
+        return visible;
+    }
+}
+
+/** 正常（未隐藏）记忆的注入选择：原有三种策略不变 */
+async function retrieveVisibleMemoriesForPrompt(
     characterId: string,
     currentContext: string,
     config: MemoryConfig

@@ -676,7 +676,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 updatedAt: new Date().toISOString(),
                 metadata: { ...(entry.metadata ?? {}), hidden },
             });
-            showNotice(hidden ? "已隐藏：角色不再读取，也不参与总结" : "已取消隐藏");
+            showNotice(hidden ? "已隐藏：不再固定注入、不参与总结，聊到相关话题时仍可被向量召回" : "已取消隐藏");
         } catch (error) {
             showNotice("操作失败: " + String(error));
         }
