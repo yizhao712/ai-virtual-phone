@@ -88,6 +88,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const stateRef = useRef<string>("CONNECTING");
     const interimTextRef = useRef<string>("");  // ref 版本，闭包安全
     const sttWarningShownRef = useRef(false);
+    // 通话中主动开口：自用户上次开口以来已主动说了几次
+    const proactiveCountRef = useRef(0);
     const subtitleScrollRef = useRef<HTMLDivElement>(null);
     const messagesRef = useRef<ChatMessage[]>([]);
     const _initUi = resolveUserIdentity(session.contactId, "chat");
@@ -313,9 +315,11 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
     // ── Full conversation turn ──────────────────────
 
-    const runConversationTurn = useCallback(async (userText?: string) => {
+    const runConversationTurn = useCallback(async (userText?: string, options?: { silenceSec?: number }) => {
         // 1. Save user message (skip for initial greeting)
         if (userText) {
+            // 用户开口：主动开口计数清零
+            proactiveCountRef.current = 0;
             const userMsg = pushChatMessage({
                 sessionId: session.id,
                 role: "user",
@@ -333,7 +337,18 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
         try {
             // 3. Generate AI response
-            const aiResponseText = flattenCompletionResult(await generateChatCompletion(session, messagesRef.current, {
+            // 主动开口：附一句沉默提示（只进本次请求，不写入聊天记录）
+            const contextMessages: ChatMessage[] = options?.silenceSec
+                ? [...messagesRef.current, {
+                    id: `_call_silence_${Date.now()}`,
+                    sessionId: session.id,
+                    role: "system",
+                    content: `[通话中对方沉默了约${options.silenceSec}秒没有说话，你可以自然地接话，比如问问对方还在不在、接着刚才的话题或换个话题]`,
+                    status: "sent",
+                    createdAt: new Date().toISOString(),
+                } as ChatMessage]
+                : messagesRef.current;
+            const aiResponseText = flattenCompletionResult(await generateChatCompletion(session, contextMessages, {
                 appTags: ["chat", "voice"],
             }));
 
@@ -548,6 +563,25 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             }
         },
     });
+
+    // ── 通话中主动开口：用户沉默时角色先说话，间隔逐次拉长，最多 3 次 ──
+    useEffect(() => {
+        if (callState !== "IDLE") return;
+        if (typedText.trim()) return; // 正在打字不算沉默
+        const PROACTIVE_DELAYS_SEC: Array<[number, number]> = [[15, 30], [30, 50], [50, 80]];
+        const index = proactiveCountRef.current;
+        if (index >= PROACTIVE_DELAYS_SEC.length) return; // 达到上限，安静等用户开口
+        const [min, max] = PROACTIVE_DELAYS_SEC[index];
+        const delayMs = (min + Math.random() * (max - min)) * 1000;
+        const idleSince = Date.now();
+        const timer = setTimeout(() => {
+            if (stateRef.current !== "IDLE") return;
+            if (interimTextRef.current.trim()) return; // 用户正在说话
+            proactiveCountRef.current += 1;
+            void runConversationTurn(undefined, { silenceSec: Math.round((Date.now() - idleSince) / 1000) });
+        }, delayMs);
+        return () => clearTimeout(timer);
+    }, [callState, typedText, runConversationTurn]);
 
     // ── Hangup ──────────────────────────────────────
 
