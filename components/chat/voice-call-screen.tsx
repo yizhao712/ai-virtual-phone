@@ -252,8 +252,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             case "CONNECTING": return initiator === "character" ? "来电..." : "正在呼叫...";
             case "IDLE": return isMuted ? "已静音" : "通话中";
             case "USER_SPEAKING": return "正在聆听...";
-            case "PROCESSING": return "对方正在思考...";
-            case "AI_SPEAKING": return "对方正在说话...";
+            case "PROCESSING": return "对方正在思考... · 可打断";
+            case "AI_SPEAKING": return "对方正在说话... · 可打断";
             case "ENDED": return "通话已结束";
         }
     };
@@ -467,10 +467,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 // 没检测到语音 → 静默重新开始监听
                 sttRef.current = null;
                 showSttCompatibilityWarning();
-                if (stateRef.current === "IDLE" || stateRef.current === "USER_SPEAKING" || stateRef.current === "PROCESSING") {
-                    // 短暂延迟后重启，避免快速循环（对方思考期间也继续听，方便改口）
+                if (stateRef.current === "IDLE" || stateRef.current === "USER_SPEAKING") {
+                    // 短暂延迟后重启，避免快速循环
                     setTimeout(() => {
-                        if (stateRef.current === "IDLE" || (stateRef.current === "PROCESSING" && !sttRef.current)) {
+                        if (stateRef.current === "IDLE") {
                             startListening();
                         }
                     }, 300);
@@ -479,13 +479,6 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             onEnd: () => {
                 // 没有 finalText 也没有 no-speech → 用 interimRef 兜底
                 sttRef.current = null;
-                if (stateRef.current === "PROCESSING") {
-                    // 对方思考期间这段监听结束了：接着听，方便改口
-                    setTimeout(() => {
-                        if (stateRef.current === "PROCESSING" && !sttRef.current) startListening();
-                    }, 300);
-                    return;
-                }
                 if (stateRef.current === "USER_SPEAKING" || stateRef.current === "IDLE") {
                     const fallback = interimTextRef.current;
                     if (fallback.trim()) {
@@ -516,11 +509,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             sttRef.current = null;
             setInterimText("");
         }
-        // 对方思考期间（PROCESSING）也继续听：识别错了可以马上改口
-        if (!androidTextInputOnly && inputMode === "voice" && (callState === "IDLE" || callState === "PROCESSING") && !isMuted) {
+        if (!androidTextInputOnly && inputMode === "voice" && callState === "IDLE" && !isMuted) {
             // 短暂延迟让 UI 过渡完成
             const timer = setTimeout(() => {
-                if (stateRef.current === "IDLE" || (stateRef.current === "PROCESSING" && !sttRef.current)) {
+                if (stateRef.current === "IDLE") {
                     startListening();
                 }
             }, 500);
@@ -532,6 +524,16 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             sttRef.current = null;
         }
     }, [androidTextInputOnly, holdToTalk, callState, isMuted, inputMode, startListening]);
+
+    // ── 打断：对方思考或说话时，立刻停下并转为听用户说 ──
+    const interruptTurn = useCallback(() => {
+        if (stateRef.current !== "PROCESSING" && stateRef.current !== "AI_SPEAKING") return;
+        turnSeqRef.current += 1; // 在途的生成 / 播放作废
+        if (audioAbortRef.current) { audioAbortRef.current(); audioAbortRef.current = null; }
+        if (typeof window !== "undefined" && window.speechSynthesis) window.speechSynthesis.cancel();
+        stateRef.current = "IDLE";
+        setCallState("IDLE");
+    }, []);
 
     const handleInputModeToggle = useCallback(() => {
         if (androidTextInputOnly) {
@@ -559,22 +561,24 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
     const handleTextSubmit = useCallback(() => {
         const text = typedText.trim();
-        // 对方思考中也允许发送：用于改口
-        if (!text || (callState !== "IDLE" && callState !== "PROCESSING")) return;
+        // 对方思考或说话时也允许发送：发送即打断
+        if (!text || (callState !== "IDLE" && callState !== "PROCESSING" && callState !== "AI_SPEAKING")) return;
+        interruptTurn();
         if (sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
         }
         setTypedText("");
         runConversationTurn(text);
-    }, [typedText, callState, runConversationTurn]);
+    }, [typedText, callState, runConversationTurn, interruptTurn]);
 
     // 按住说话（非 iOS）：按下录音，松开转写后走对话轮
     const holdInput = useHoldToTalk({
         characterId: session.contactId,
-        // 对方思考中也能按住说话改口
-        canStart: () => stateRef.current === "IDLE" || stateRef.current === "PROCESSING",
+        // 对方思考或说话时按住说话 = 打断
+        canStart: () => stateRef.current === "IDLE" || stateRef.current === "PROCESSING" || stateRef.current === "AI_SPEAKING",
         onRecordingStart: () => {
+            interruptTurn();
             setInterimText("");
             if (stateRef.current === "IDLE") setCallState("USER_SPEAKING");
         },
@@ -778,13 +782,13 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                                 value={typedText}
                                 onChange={e => setTypedText(e.target.value)}
                                 className="call-text-input"
-                                placeholder={callState === "IDLE" ? "输入你想说的话..." : "稍等对方说完..."}
-                                disabled={callState !== "IDLE"}
+                                placeholder={callState === "IDLE" ? "输入你想说的话..." : "发送即可打断对方..."}
+                                disabled={callState !== "IDLE" && callState !== "PROCESSING" && callState !== "AI_SPEAKING"}
                             />
                             <button
                                 type="submit"
                                 className="call-text-send-btn"
-                                disabled={!typedText.trim() || callState !== "IDLE"}
+                                disabled={!typedText.trim() || (callState !== "IDLE" && callState !== "PROCESSING" && callState !== "AI_SPEAKING")}
                                 aria-label="发送"
                             >
                                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round">
@@ -905,7 +909,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
                             {/* Mic button — input mode toggle with voice-state indicator */}
                             <button
-                                onClick={handleInputModeToggle}
+                                onClick={inputMode === "voice" && (callState === "PROCESSING" || callState === "AI_SPEAKING") ? interruptTurn : handleInputModeToggle}
                                 className="ui-call-mic ui-call-mic-lg"
                                 data-state={
                                     inputMode === "text" ? "text"
