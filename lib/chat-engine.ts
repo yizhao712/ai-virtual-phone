@@ -58,6 +58,7 @@ import { fetchLlmPayload } from "./llm-http";
 import { loadMemoryConfig, incrementEventCounter } from "./memory-storage";
 import { retrieveCoreMemoriesForPrompt, retrieveMemoriesForPrompt } from "./memory-service";
 import { formatCoreMemories, formatLongTermMemories } from "./memory-injector";
+import { applyWorldBookEntryOverrides } from "./worldbook-entry-overrides";
 import { maybeRunSummarization } from "./memory-summarizer";
 import { prepareShortTermContext } from "./short-term-assembler";
 import { parseActionTags, dispatchActions } from "./action-parser";
@@ -1803,9 +1804,10 @@ export async function buildChatPromptMessages(
     const allWorldBooks = loadWorldBooks();
     const extraWorldBookIds = options?.extraWorldBookIds ?? [];
     const worldBookIds = [...new Set([...(activeSlot.worldBookIds || []), ...extraWorldBookIds])];
-    const worldBooks = promptProfile?.enableWorldBooks === false
+    // 按角色套用条目的单独开关（同一本世界书多个角色共用时互不影响）
+    const worldBooks = applyWorldBookEntryOverrides(character.id, promptProfile?.enableWorldBooks === false
         ? []
-        : worldBookIds.map(id => allWorldBooks.find(w => w.id === id)).filter(Boolean) as typeof allWorldBooks;
+        : worldBookIds.map(id => allWorldBooks.find(w => w.id === id)).filter(Boolean) as typeof allWorldBooks);
 
     const allRegexes = loadRegexes();
     const regexes = promptProfile?.enableRegexes === false

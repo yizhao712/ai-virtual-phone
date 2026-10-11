@@ -13,6 +13,13 @@ import {
     setCharacterBinding,
 } from "@/lib/settings-storage";
 import type { ApiConfig, BindingConfig, BindingSlot, WorldBookConfig } from "@/lib/settings-types";
+import {
+    isWorldBookEntryEnabled,
+    loadWorldBookEntryOverrides,
+    saveWorldBookEntryOverrides,
+    setWorldBookEntryOverride,
+    type WorldBookEntryOverrides,
+} from "@/lib/worldbook-entry-overrides";
 import { loadCharacters } from "@/lib/character-storage";
 import type { Character } from "@/lib/character-types";
 
@@ -68,6 +75,8 @@ export function QuickActionFloat() {
     const [apiConfigs, setApiConfigs] = useState<ApiConfig[]>([]);
     const [worldBooks, setWorldBooks] = useState<WorldBookConfig[]>([]);
     const [expandedWorldBookId, setExpandedWorldBookId] = useState<string | null>(null);
+    // 条目的按角色开关（角色页签下使用）
+    const [entryOverrides, setEntryOverrides] = useState<WorldBookEntryOverrides>(() => loadWorldBookEntryOverrides());
     // API 区折叠状态，记在本地，下次打开保持
     const [apiCollapsed, setApiCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("quick-action-api-collapsed") === "1");
     const toggleApiCollapsed = useCallback(() => {
@@ -93,6 +102,7 @@ export function QuickActionFloat() {
         setConfig(loadBindingConfig());
         setApiConfigs(loadApiConfigs());
         setWorldBooks(loadWorldBooks());
+        setEntryOverrides(loadWorldBookEntryOverrides());
         setCharacters(nextCharacters);
         setSelectedCharId(prev => {
             if (prev && nextCharacters.some(character => character.id === prev)) return prev;
@@ -218,7 +228,8 @@ export function QuickActionFloat() {
     }, [selectedWorldBookIds, updateWorldBooks]);
 
     // 条目开关直接改世界书本身的 disable（每本世界书只挂一个角色，等同按角色区分）
-    const toggleWorldBookEntry = useCallback((worldBookId: string, entryUid: string) => {
+    // 「全局」页签：改世界书本身的默认开关
+    const toggleWorldBookEntryBase = useCallback((worldBookId: string, entryUid: string) => {
         const book = worldBooks.find(item => item.id === worldBookId);
         const target = book?.entries.find(entry => entry.uid === entryUid);
         if (!book || !target) return;
@@ -234,6 +245,32 @@ export function QuickActionFloat() {
             updateWorldBooks([...selectedWorldBookIds, worldBookId]);
         }
     }, [worldBooks, selectedWorldBookIds, updateWorldBooks]);
+
+    // 当前页签下某条目是否开启：角色页签看该角色的单独开关，全局页签看默认开关
+    const entryEnabledFor = useCallback((bookId: string, entry: { uid: string; disable: boolean }) => (
+        scope === "character" && selectedCharId
+            ? isWorldBookEntryEnabled(entryOverrides, selectedCharId, bookId, entry)
+            : !entry.disable
+    ), [scope, selectedCharId, entryOverrides]);
+
+    // 「角色」页签：只改这个角色自己的开关，同一本世界书的其他角色不受影响
+    const toggleWorldBookEntry = useCallback((worldBookId: string, entryUid: string) => {
+        if (scope !== "character" || !selectedCharId) {
+            toggleWorldBookEntryBase(worldBookId, entryUid);
+            return;
+        }
+        const book = worldBooks.find(item => item.id === worldBookId);
+        const target = book?.entries.find(entry => entry.uid === entryUid);
+        if (!book || !target) return;
+        const wasEnabled = isWorldBookEntryEnabled(entryOverrides, selectedCharId, worldBookId, target);
+        const next = setWorldBookEntryOverride(entryOverrides, selectedCharId, worldBookId, target, !wasEnabled);
+        setEntryOverrides(next);
+        saveWorldBookEntryOverrides(next);
+        // 在未启用的书里打开条目：自动启用整本（只对当前角色），否则条目不会被注入
+        if (!wasEnabled && !selectedWorldBookIds.includes(worldBookId)) {
+            updateWorldBooks([...selectedWorldBookIds, worldBookId]);
+        }
+    }, [scope, selectedCharId, worldBooks, entryOverrides, selectedWorldBookIds, updateWorldBooks, toggleWorldBookEntryBase]);
 
     const cancelWorldBookLongPress = useCallback(() => {
         if (worldBookPressTimerRef.current !== null) {
@@ -506,7 +543,7 @@ export function QuickActionFloat() {
                                 <div className="quick-action-chip-grid">
                                     {worldBooks.map(book => {
                                         const selected = selectedWorldBookIds.includes(book.id);
-                                        const enabledCount = book.entries.filter(entry => !entry.disable).length;
+                                        const enabledCount = book.entries.filter(entry => entryEnabledFor(book.id, entry)).length;
                                         const partial = selected && enabledCount < book.entries.length;
                                         const stateStyle = selected ? (partial ? WORLD_BOOK_PARTIAL_STYLE : WORLD_BOOK_FULL_STYLE) : undefined;
                                         return (
@@ -537,7 +574,7 @@ export function QuickActionFloat() {
                                         <div className="quick-action-section-heading">
                                             <span>{expandedWorldBook.name} · 条目</span>
                                             <small>
-                                                {selectedWorldBookIds.includes(expandedWorldBook.id) ? "已启用" : "未启用"} · {expandedEntries.filter(entry => !entry.disable).length}/{expandedEntries.length} 条目开启
+                                                {selectedWorldBookIds.includes(expandedWorldBook.id) ? "已启用" : "未启用"} · {expandedEntries.filter(entry => entryEnabledFor(expandedWorldBook.id, entry)).length}/{expandedEntries.length} 条目开启{scope === "character" && selectedCharacter ? ` · 仅对${selectedCharacter.name}生效` : " · 默认开关"}
                                             </small>
                                         </div>
                                         {expandedEntries.length === 0 ? (
@@ -547,12 +584,12 @@ export function QuickActionFloat() {
                                                 type="button"
                                                 key={entry.uid}
                                                 className="quick-action-option"
-                                                data-selected={!entry.disable}
+                                                data-selected={entryEnabledFor(expandedWorldBook.id, entry)}
                                                 disabled={characterDisabled}
                                                 onClick={() => toggleWorldBookEntry(expandedWorldBook.id, entry.uid)}
                                             >
                                                 <span>{entry.comment || "无标题条目"}</span>
-                                                {!entry.disable ? <Check size={15} /> : null}
+                                                {entryEnabledFor(expandedWorldBook.id, entry) ? <Check size={15} /> : null}
                                             </button>
                                         ))}
                                     </div>
