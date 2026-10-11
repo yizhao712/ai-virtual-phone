@@ -53,7 +53,7 @@ import { useKeyboardDismissAutoSend } from "@/components/chat/use-keyboard-dismi
 import { cancelBailoutKey } from "@/lib/push-bailout-client";
 import { PENDING_REPLY_PREFIX } from "@/lib/friend-request-engine";
 import type { UserIdentity } from "@/components/settings/user-identity";
-import { AlertCircle, Blocks, Check, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
+import { AlertCircle, Blocks, Check, Copy, Trash2, User, ChevronLeft, ChevronRight, Clapperboard, Clock, Gift, Languages, Loader2, MoreHorizontal, X } from "lucide-react";
 import { setDebugChatState } from "@/lib/debug-store";
 import { SessionCustomCSS } from "@/components/ui/session-custom-css";
 import { setChatActive } from "@/lib/music-action-queue";
@@ -6227,6 +6227,38 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                                 : `实际删除 ${multiDeleteTargetIds.length} 条`}
                         </span>
                     </div>
+                    <button
+                        type="button"
+                        className="chat-multi-select-icon-btn"
+                        disabled={selectedMessageIds.size === 0}
+                        aria-label="复制选中消息"
+                        title="复制选中消息"
+                        onClick={() => {
+                            // 按聊天顺序拼接选中消息，每条带说话人；文字取屏幕上显示的内容
+                            const lines = messages
+                                .filter(m => selectedMessageIds.has(m.id))
+                                .map(m => {
+                                    const text = (getMessageDisplayContent(m) || m.mediaData?.label || "").trim();
+                                    if (!text) return "";
+                                    const speaker = m.role === "user"
+                                        ? (userIdentity?.name || "我")
+                                        : m.role === "assistant"
+                                            ? (m.senderName || character?.name || "对方")
+                                            : "系统";
+                                    return `${speaker}：${text}`;
+                                })
+                                .filter(Boolean);
+                            if (lines.length === 0) {
+                                showChatToast("选中的消息没有可复制的文字");
+                                return;
+                            }
+                            copyTextToClipboard(lines.join("\n"));
+                            showChatToast(`已复制 ${lines.length} 条`);
+                            cancelMultiSelect();
+                        }}
+                    >
+                        <Copy size={19} strokeWidth={1.8} />
+                    </button>
                     <button
                         type="button"
                         className="chat-multi-select-delete-btn"
