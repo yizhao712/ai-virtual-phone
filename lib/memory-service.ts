@@ -19,6 +19,56 @@ import { estimateTokens } from "./token-counter";
 // 隐藏（存档）记忆：不固定注入，只在与当前对话相关时按向量相似度取回少量几条
 const ARCHIVED_RECALL_TOP_K = 3;
 const ARCHIVED_RECALL_MIN_SCORE = 0.35;
+// 片段召回：整条存档记忆太长时，只保留和当前对话字面相关的句子
+const ARCHIVED_EXCERPT_MAX_CHARS = 150;
+const ARCHIVED_QUERY_TAIL_CHARS = 400;
+
+function textGrams(text: string): Set<string> {
+    const grams = new Set<string>();
+    const lower = text.toLowerCase();
+    // 英文 / 数字按词，中文按相邻两字
+    (lower.match(/[a-z0-9]{2,}/g) ?? []).forEach(word => grams.add(word));
+    (lower.match(/[\u4e00-\u9fff]{2,}/g) ?? []).forEach(run => {
+        for (let i = 0; i < run.length - 1; i++) grams.add(run.slice(i, i + 2));
+    });
+    return grams;
+}
+
+function excerptArchivedMemory(entry: MemoryEntry, context: string): MemoryEntry {
+    const content = entry.content.trim();
+    if (content.length <= ARCHIVED_EXCERPT_MAX_CHARS) return entry;
+    // 不用正则后行断言，兼容旧版 iOS Safari
+    const sentences = (content.match(/[^。！？!?；;\n]+[。！？!?；;\n]?/g) ?? [])
+        .map(text => text.trim())
+        .filter(Boolean);
+    if (sentences.length <= 1) {
+        return { ...entry, content: `${content.slice(0, ARCHIVED_EXCERPT_MAX_CHARS)}…` };
+    }
+    const query = textGrams(context.slice(-ARCHIVED_QUERY_TAIL_CHARS));
+    const scored = sentences.map((text, index) => {
+        let score = 0;
+        textGrams(text).forEach(gram => { if (query.has(gram)) score++; });
+        return { text, index, score };
+    });
+    // 有字面重合：按重合度取；没有：按原顺序取开头几句
+    const ranked = scored.some(item => item.score > 0)
+        ? scored.filter(item => item.score > 0).sort((a, b) => b.score - a.score)
+        : scored;
+    const picked: typeof scored = [];
+    let length = 0;
+    for (const item of ranked) {
+        if (picked.length > 0 && length + item.text.length > ARCHIVED_EXCERPT_MAX_CHARS) continue;
+        picked.push(item);
+        length += item.text.length;
+        if (length >= ARCHIVED_EXCERPT_MAX_CHARS) break;
+    }
+    const excerpt = picked
+        .sort((a, b) => a.index - b.index)
+        .map(item => item.text)
+        .join("")
+        .slice(0, ARCHIVED_EXCERPT_MAX_CHARS);
+    return { ...entry, content: `${excerpt}…` };
+}
 
 export async function retrieveMemoriesForPrompt(
     characterId: string,
@@ -47,7 +97,7 @@ export async function retrieveMemoriesForPrompt(
             .filter(item => item.score >= ARCHIVED_RECALL_MIN_SCORE)
             .sort((a, b) => b.score - a.score)
             .slice(0, ARCHIVED_RECALL_TOP_K)
-            .map(item => item.entry);
+            .map(item => excerptArchivedMemory(item.entry, currentContext));
         return [...visible, ...fillByBudget(recalled, remaining)];
     } catch {
         return visible;
