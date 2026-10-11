@@ -90,6 +90,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const sttWarningShownRef = useRef(false);
     // 通话中主动开口：自用户上次开口以来已主动说了几次
     const proactiveCountRef = useRef(0);
+    // 每轮对话的序号：用户在对方思考时改口，旧的一轮作废
+    const turnSeqRef = useRef(0);
     const subtitleScrollRef = useRef<HTMLDivElement>(null);
     const messagesRef = useRef<ChatMessage[]>([]);
     const _initUi = resolveUserIdentity(session.contactId, "chat");
@@ -316,10 +318,13 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     // ── Full conversation turn ──────────────────────
 
     const runConversationTurn = useCallback(async (userText?: string, options?: { silenceSec?: number }) => {
+        const turnSeq = ++turnSeqRef.current;
         // 1. Save user message (skip for initial greeting)
         if (userText) {
             // 用户开口：主动开口计数清零
             proactiveCountRef.current = 0;
+            // 改口时若有在途播放，先停掉
+            if (audioAbortRef.current) { audioAbortRef.current(); audioAbortRef.current = null; }
             const userMsg = pushChatMessage({
                 sessionId: session.id,
                 role: "user",
@@ -331,7 +336,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             setSubtitles(prev => [...prev, { id: userMsg.id, role: "user", text: userText }]);
         }
 
-        // 2. Switch to PROCESSING
+        // 2. Switch to PROCESSING（同步写 ref，识别回调能立刻知道正在思考）
+        stateRef.current = "PROCESSING";
         setCallState("PROCESSING");
         setInterimText("");
 
@@ -354,6 +360,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
             // Bail if call ended during generation
             if (stateRef.current === "ENDED") return;
+            // 生成期间用户改口：这一轮作废，结果不入库
+            if (turnSeq !== turnSeqRef.current) return;
 
             // 4. Process response
             const { cleanParts } = processAIResponse(aiResponseText);
@@ -370,6 +378,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             setSubtitles(prev => [...prev, { id: subtitleId, role: "assistant", text: displayText }]);
 
             // 6. TTS
+            // 开始说话前停掉思考期间的监听，避免把角色自己的声音录进去
+            stateRef.current = "AI_SPEAKING";
+            if (sttRef.current) { sttRef.current.abort(); sttRef.current = null; }
+            setInterimText("");
             setCallState("AI_SPEAKING");
 
             const voiceConfig = resolveVoiceConfig(session.contactId);
@@ -377,6 +389,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 try {
                     const audioBlob = await synthesizeSpeech(speechText, voiceConfig);
                     if (stateRef.current === "ENDED") return;
+                    if (turnSeq !== turnSeqRef.current) return;
 
                     if (audioBlob) {
                         const { promise, abort } = playCallAudio(audioBlob);
@@ -389,11 +402,12 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 }
             }
 
-            if (stateRef.current !== "ENDED") {
+            if (stateRef.current !== "ENDED" && turnSeq === turnSeqRef.current) {
                 setCallState("IDLE");
             }
         } catch (error: any) {
             console.error("[VoiceCall] Error:", error);
+            if (turnSeq !== turnSeqRef.current) return; // 已被改口的新一轮取代
             if (stateRef.current !== "ENDED") {
                 setSubtitles(prev => [...prev, {
                     id: `err-${Date.now()}`,
@@ -431,6 +445,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             },
             onFinal: (text) => {
                 sttRef.current = null;
+                interimTextRef.current = "";
                 if (text.trim()) {
                     runConversationTurn(text.trim());
                 } else {
@@ -452,10 +467,10 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 // 没检测到语音 → 静默重新开始监听
                 sttRef.current = null;
                 showSttCompatibilityWarning();
-                if (stateRef.current === "IDLE" || stateRef.current === "USER_SPEAKING") {
-                    // 短暂延迟后重启，避免快速循环
+                if (stateRef.current === "IDLE" || stateRef.current === "USER_SPEAKING" || stateRef.current === "PROCESSING") {
+                    // 短暂延迟后重启，避免快速循环（对方思考期间也继续听，方便改口）
                     setTimeout(() => {
-                        if (stateRef.current === "IDLE") {
+                        if (stateRef.current === "IDLE" || (stateRef.current === "PROCESSING" && !sttRef.current)) {
                             startListening();
                         }
                     }, 300);
@@ -464,6 +479,13 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             onEnd: () => {
                 // 没有 finalText 也没有 no-speech → 用 interimRef 兜底
                 sttRef.current = null;
+                if (stateRef.current === "PROCESSING") {
+                    // 对方思考期间这段监听结束了：接着听，方便改口
+                    setTimeout(() => {
+                        if (stateRef.current === "PROCESSING" && !sttRef.current) startListening();
+                    }, 300);
+                    return;
+                }
                 if (stateRef.current === "USER_SPEAKING" || stateRef.current === "IDLE") {
                     const fallback = interimTextRef.current;
                     if (fallback.trim()) {
@@ -494,10 +516,11 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             sttRef.current = null;
             setInterimText("");
         }
-        if (!androidTextInputOnly && inputMode === "voice" && callState === "IDLE" && !isMuted) {
+        // 对方思考期间（PROCESSING）也继续听：识别错了可以马上改口
+        if (!androidTextInputOnly && inputMode === "voice" && (callState === "IDLE" || callState === "PROCESSING") && !isMuted) {
             // 短暂延迟让 UI 过渡完成
             const timer = setTimeout(() => {
-                if (stateRef.current === "IDLE") {
+                if (stateRef.current === "IDLE" || (stateRef.current === "PROCESSING" && !sttRef.current)) {
                     startListening();
                 }
             }, 500);
@@ -536,7 +559,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
     const handleTextSubmit = useCallback(() => {
         const text = typedText.trim();
-        if (!text || callState !== "IDLE") return;
+        // 对方思考中也允许发送：用于改口
+        if (!text || (callState !== "IDLE" && callState !== "PROCESSING")) return;
         if (sttRef.current) {
             sttRef.current.abort();
             sttRef.current = null;
@@ -548,7 +572,8 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     // 按住说话（非 iOS）：按下录音，松开转写后走对话轮
     const holdInput = useHoldToTalk({
         characterId: session.contactId,
-        canStart: () => stateRef.current === "IDLE",
+        // 对方思考中也能按住说话改口
+        canStart: () => stateRef.current === "IDLE" || stateRef.current === "PROCESSING",
         onRecordingStart: () => {
             setInterimText("");
             if (stateRef.current === "IDLE") setCallState("USER_SPEAKING");
