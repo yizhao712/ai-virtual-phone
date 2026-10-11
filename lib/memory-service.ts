@@ -21,7 +21,8 @@ const ARCHIVED_RECALL_TOP_K = 3;
 const ARCHIVED_RECALL_MIN_SCORE = 0.35;
 // 片段召回：整条存档记忆太长时，只保留和当前对话字面相关的句子
 const ARCHIVED_EXCERPT_MAX_CHARS = 150;
-const ARCHIVED_QUERY_TAIL_CHARS = 400;
+// 召回和截取都只看最近一小段对话（约最新一两条消息），话题过去后就不再召回
+const ARCHIVED_QUERY_TAIL_CHARS = 200;
 
 function textGrams(text: string): Set<string> {
     const grams = new Set<string>();
@@ -90,7 +91,8 @@ export async function retrieveMemoriesForPrompt(
     if (remaining <= 0) return visible;
 
     try {
-        const queryEmbedding = await generateEmbedding(currentContext, embeddingApiConfig);
+        const recentQuery = currentContext.slice(-ARCHIVED_QUERY_TAIL_CHARS);
+        const queryEmbedding = await generateEmbedding(recentQuery, embeddingApiConfig);
         if (!queryEmbedding) return visible;
         const recalled = archived
             .map(entry => ({ entry, score: cosineSimilarity(queryEmbedding, entry.embedding!) }))
