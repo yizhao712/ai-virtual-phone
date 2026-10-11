@@ -24,6 +24,7 @@ import {
 import { loadTimedWakeSchedules, type TimedWakeSchedule } from "./timed-wake-storage";
 import {
     IDLE_RECONNECT_MAX_CONSECUTIVE,
+    getIdleReconnectEffectiveMinutes,
     loadIdleReconnectRules,
     type IdleReconnectRule,
 } from "./idle-reconnect-storage";
@@ -412,7 +413,8 @@ export async function armIdleReconnectBailout(rule: IdleReconnectRule): Promise<
             return { ok: false, reason: "已达到连续主动联系上限" };
         }
 
-        const intervalMs = Math.max(1, rule.intervalMinutes) * 60_000;
+        // 忽快忽慢：随机浮动 + 连发放缓，与本地判断用同一个计算函数
+        const intervalMs = getIdleReconnectEffectiveMinutes({ ...rule, consecutiveCount: effectiveConsecutive }) * 60_000;
         const nextDueAt = Math.max(
             lastUserAt + intervalMs,
             rule.lastFiredAt ? rule.lastFiredAt + intervalMs : 0,

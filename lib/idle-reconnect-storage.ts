@@ -24,8 +24,27 @@ export type IdleReconnectRule = {
     lastFiredAt?: number;
     /** 当前这次主动生成被用户停止后，短时间内不再重试 */
     suppressedUntil?: number;
+    /** 本次间隔的随机浮动系数（每次触发 / 用户回复后重新随机），缺省按 1 */
+    jitterFactor?: number;
     createdAt: number;
 };
+
+// ── 忽快忽慢：实际间隔 = 设定 × 随机系数 × 连发放缓 ──
+const IDLE_JITTER_MIN = 0.7;
+const IDLE_JITTER_MAX = 1.5;
+/** 每多连发一次，间隔再拉长 50%（用户一直不回时越来越慢，不会越催越急） */
+const IDLE_BACKOFF_STEP = 0.5;
+
+function randomJitter(): number {
+    return IDLE_JITTER_MIN + Math.random() * (IDLE_JITTER_MAX - IDLE_JITTER_MIN);
+}
+
+/** 本次实际生效的沉默阈值（分钟）。本地判断与云端预约都应使用它，保证两边时间一致。 */
+export function getIdleReconnectEffectiveMinutes(rule: IdleReconnectRule): number {
+    const jitter = typeof rule.jitterFactor === "number" && Number.isFinite(rule.jitterFactor) ? rule.jitterFactor : 1;
+    const backoff = 1 + IDLE_BACKOFF_STEP * Math.max(0, rule.consecutiveCount);
+    return Math.max(1, Math.round(rule.intervalMinutes * jitter * backoff));
+}
 
 function isRule(value: unknown): value is IdleReconnectRule {
     if (!value || typeof value !== "object") return false;
@@ -58,7 +77,7 @@ function saveRules(rules: IdleReconnectRule[]): void {
 /** 每角色一条：同角色再建即替换。 */
 export function upsertIdleReconnectRule(rule: IdleReconnectRule): void {
     const rest = loadIdleReconnectRules().filter(item => item.characterId !== rule.characterId);
-    saveRules([...rest, rule]);
+    saveRules([...rest, { ...rule, jitterFactor: rule.jitterFactor ?? randomJitter() }]);
 }
 
 export function removeIdleReconnectRule(id: string): void {
@@ -73,6 +92,7 @@ export function markIdleReconnectFired(id: string, firedAtMs: number): void {
     if (!rule.lastFiredAt || firedAtMs > rule.lastFiredAt) {
         rule.lastFiredAt = firedAtMs;
         rule.consecutiveCount = Math.min(IDLE_RECONNECT_MAX_CONSECUTIVE, rule.consecutiveCount + 1);
+        rule.jitterFactor = randomJitter();
         saveRules(rules);
     }
 }
@@ -96,6 +116,7 @@ export function resetIdleReconnectForSession(sessionId: string): IdleReconnectRu
         rule.consecutiveCount = 0;
     }
     rule.suppressedUntil = undefined;
+    rule.jitterFactor = randomJitter();
     saveRules(rules);
     return rule;
 }
