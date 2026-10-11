@@ -37,6 +37,7 @@ import { CustomAppForegroundBoundary } from "@/components/app-market/custom-app-
 
 import { ChatSettingsPanel } from "./chat-settings-panel";
 import { VoiceCallScreen } from "./voice-call-screen";
+import { GLOBAL_CALL_ENDED_EVENT, startGlobalCall } from "./global-call-host";
 import { VideoCallScreen } from "./video-call-screen";
 import { GroupCallScreen } from "./group-call-screen";
 import { TransferTargetModal } from "./transfer-target-modal";
@@ -5357,6 +5358,24 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         setMessages(nextMessages);
     }, [session.id, stopLoadMoreAnchorTracking]);
 
+    // 单聊语音通话交给全局托管：离开聊天室 / 回桌面也不断线，可最小化成小窗
+    useEffect(() => {
+        if (!showVoiceCall || session.isGroup || !character) return;
+        startGlobalCall({ type: "voice", session, character, initiator: callInitiator });
+        setShowVoiceCall(false);
+    }, [showVoiceCall, session, character, callInitiator]);
+
+    // 全局托管的通话挂断后：本聊天室仍挂载时，执行与原来相同的收尾
+    const globalCallEndRef = useRef<() => void>(() => undefined);
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+            if (detail?.sessionId === session.id) globalCallEndRef.current();
+        };
+        window.addEventListener(GLOBAL_CALL_ENDED_EVENT, handler);
+        return () => window.removeEventListener(GLOBAL_CALL_ENDED_EVENT, handler);
+    }, [session.id]);
+
     // Shared handler: reload messages + re-trigger scroll-to-bottom after call ends
     const returnFromCall = (hide: () => void) => {
         hide();
@@ -5365,6 +5384,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         syncMessagesFromStorage();
         triggerReply();
     };
+    globalCallEndRef.current = () => returnFromCall(() => undefined);
 
     const editingMessage = editingMessageId ? messages.find(m => m.id === editingMessageId) : null;
     const editingSystemInstruction = editingMessage ? isSystemInstructionMessage(editingMessage) : false;
@@ -5382,16 +5402,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 />
             );
         }
-        if (character) {
-            return (
-                <VoiceCallScreen
-                    session={session}
-                    character={character}
-                    initiator={callInitiator}
-                    onEnd={() => returnFromCall(() => setShowVoiceCall(false))}
-                />
-            );
-        }
+        // 单聊语音通话已交给全局托管（见上方 effect），这里不再整屏渲染
     }
 
     if (showVideoCall) {
