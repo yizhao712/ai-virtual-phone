@@ -277,6 +277,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [dateEditor, setDateEditor] = useState<{ id: string; value: string } | null>(null);
     const [memDrag, setMemDrag] = useState<{ id: string; startY: number; offset: number } | null>(null);
     const [orderRevision, setOrderRevision] = useState(0);
+    const [backfillProgress, setBackfillProgress] = useState<{ done: number; total: number } | null>(null);
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -661,6 +662,58 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         }
     };
 
+    // ── 补全向量：给没有向量的长期记忆（含隐藏的）补算 embedding ──
+    const hasEmbedding = (entry: MemoryEntry) => Array.isArray(entry.embedding) && entry.embedding.length > 0;
+    const missingEmbeddingCount = longTermEntries.filter(entry => !hasEmbedding(entry)).length;
+
+    const handleBackfillEmbeddings = async () => {
+        if (backfillProgress) return;
+        if (!config.vectorRecallEnabled) {
+            showNotice("请先在记忆设置里打开「向量召回」");
+            return;
+        }
+        const embeddingApiConfig = resolveAuxiliaryApiConfig("embeddingApiConfigId");
+        if (!embeddingApiConfig) {
+            showNotice("未配置向量 API（绑定配置 → 辅助API绑定）");
+            return;
+        }
+        if (!resolveEmbeddingModel(embeddingApiConfig)) {
+            showNotice("向量 API 没有可用的向量模型：请把这份配置的默认模型填成向量模型名（如 text-embedding-3-small、BAAI/bge-m3）");
+            return;
+        }
+        const targets = longTermEntries.filter(entry => !hasEmbedding(entry));
+        if (targets.length === 0) {
+            showNotice("所有长期记忆都已有向量");
+            return;
+        }
+        setBackfillProgress({ done: 0, total: targets.length });
+        let success = 0;
+        let consecutiveFail = 0;
+        let firstError = "";
+        for (let i = 0; i < targets.length; i++) {
+            const entry = targets[i];
+            try {
+                const embedding = await generateEmbedding(entry.content, embeddingApiConfig, { throwOnError: true });
+                if (embedding) {
+                    const updated: MemoryEntry = { ...entry, embedding };
+                    await saveMemoryEntry(updated);
+                    setLongTermEntries(prev => prev.map(item => item.id === updated.id ? updated : item));
+                    success++;
+                    consecutiveFail = 0;
+                }
+            } catch (error) {
+                consecutiveFail++;
+                if (!firstError) firstError = error instanceof Error ? error.message : String(error);
+            }
+            setBackfillProgress({ done: i + 1, total: targets.length });
+            if (consecutiveFail >= 3) break;
+        }
+        setBackfillProgress(null);
+        showNotice(firstError
+            ? `已补全 ${success}/${targets.length} 条；失败原因：${firstError.slice(0, 120)}`
+            : `已补全 ${success} 条记忆的向量`);
+    };
+
     // ── Long-term: hide / date / refine ──
     const updateLongTermEntry = async (entry: MemoryEntry) => {
         await saveMemoryEntry(entry);
@@ -891,6 +944,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 <span>{isLong ? "按日期重排" : "恢复默认顺序"}</span>
                             </button>
                         )}
+                        {isLong && missingEmbeddingCount > 0 && (
+                            <button
+                                className="mem-entry-add-btn"
+                                disabled={!!backfillProgress}
+                                onClick={() => void handleBackfillEmbeddings()}
+                            >
+                                <Zap size={15} strokeWidth={1.8} />
+                                <span>{backfillProgress ? `补全中 ${backfillProgress.done}/${backfillProgress.total}` : `补全向量（${missingEmbeddingCount}）`}</span>
+                            </button>
+                        )}
                         {isLong && (
                             <button
                                 className="mem-entry-add-btn"
@@ -1028,6 +1091,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 <div className="mem-report-actions">
                                     {isLong && isMemoryHidden(entry) && (
                                         <span className="mem-origin-badge">HIDDEN</span>
+                                    )}
+                                    {isLong && !hasEmbedding(entry) && (
+                                        <span className="mem-origin-badge" title="没有向量，向量检索搜不到这条">无向量</span>
                                     )}
                                     <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
                                         {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
