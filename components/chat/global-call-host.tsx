@@ -54,7 +54,8 @@ function clampPos(value: number, max: number): number {
 const MINIMIZE_BTN_STYLE: CSSProperties = {
     position: "absolute",
     top: "calc(var(--safe-area-top, 44px) + 10px)",
-    right: 12,
+    // 音量控件自带定位在右上角（call-volume-control.tsx），最小化按钮并排放在它左边
+    right: 64,
     zIndex: 1000,
     width: 36,
     height: 36,
