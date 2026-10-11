@@ -69,7 +69,10 @@ function getStatusSafeTop(element: HTMLElement): number {
 export function QuickActionFloat() {
     const [enabled, setEnabled] = useState(false);
     const [open, setOpen] = useState(false);
-    const [scope, setScope] = useState<QuickScope>("global");
+    // 默认「角色」页签，并记住上次的选择：避免一打开就改到全局默认开关
+    const [scope, setScope] = useState<QuickScope>(() => (
+        typeof window !== "undefined" && window.localStorage.getItem("quick-action-scope") === "global" ? "global" : "character"
+    ));
     const [selectedCharId, setSelectedCharId] = useState("");
     const [config, setConfig] = useState<BindingConfig>(EMPTY_BINDING_CONFIG);
     const [apiConfigs, setApiConfigs] = useState<ApiConfig[]>([]);
@@ -77,6 +80,14 @@ export function QuickActionFloat() {
     const [expandedWorldBookId, setExpandedWorldBookId] = useState<string | null>(null);
     // 条目的按角色开关（角色页签下使用）
     const [entryOverrides, setEntryOverrides] = useState<WorldBookEntryOverrides>(() => loadWorldBookEntryOverrides());
+
+    // 记住页签和角色选择
+    useEffect(() => {
+        try {
+            window.localStorage.setItem("quick-action-scope", scope);
+            if (selectedCharId) window.localStorage.setItem("quick-action-character", selectedCharId);
+        } catch { /* ignore */ }
+    }, [scope, selectedCharId]);
     // API 区折叠状态，记在本地，下次打开保持
     const [apiCollapsed, setApiCollapsed] = useState(() => typeof window !== "undefined" && window.localStorage.getItem("quick-action-api-collapsed") === "1");
     const toggleApiCollapsed = useCallback(() => {
@@ -106,6 +117,10 @@ export function QuickActionFloat() {
         setCharacters(nextCharacters);
         setSelectedCharId(prev => {
             if (prev && nextCharacters.some(character => character.id === prev)) return prev;
+            // 优先恢复上次选的角色
+            let stored = "";
+            try { stored = window.localStorage.getItem("quick-action-character") || ""; } catch { /* ignore */ }
+            if (stored && nextCharacters.some(character => character.id === stored)) return stored;
             return nextCharacters[0]?.id || "";
         });
     }, []);
@@ -574,7 +589,7 @@ export function QuickActionFloat() {
                                         <div className="quick-action-section-heading">
                                             <span>{expandedWorldBook.name} · 条目</span>
                                             <small>
-                                                {selectedWorldBookIds.includes(expandedWorldBook.id) ? "已启用" : "未启用"} · {expandedEntries.filter(entry => entryEnabledFor(expandedWorldBook.id, entry)).length}/{expandedEntries.length} 条目开启{scope === "character" && selectedCharacter ? ` · 仅对${selectedCharacter.name}生效` : " · 默认开关"}
+                                                {selectedWorldBookIds.includes(expandedWorldBook.id) ? "已启用" : "未启用"} · {expandedEntries.filter(entry => entryEnabledFor(expandedWorldBook.id, entry)).length}/{expandedEntries.length} 条目开启{scope === "character" && selectedCharacter ? ` · 仅对${selectedCharacter.name}生效` : " · 全局默认，所有角色都会变"}
                                             </small>
                                         </div>
                                         {expandedEntries.length === 0 ? (
