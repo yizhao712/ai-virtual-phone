@@ -66,6 +66,63 @@ function requireQaApiConfig(): ApiConfig {
     return config;
 }
 
+// ── 识图转文字 ────────────────────────────────────────
+// 工坊主模型没开图像识别时，借用一条开了识图的 API 先把图片转写成文字，
+// 再把文字交给主模型：主模型不必支持视觉，也能「看」到用户发来的截图。
+
+/** 工坊当前所用的 API 是否开启了图像识别（可直接看图） */
+export function qaApiSupportsVision(): boolean {
+    return resolveQaApiConfig()?.enableImageRecognition === true;
+}
+
+/** 识图助手：API 列表中第一条开启了图像识别的配置 */
+function resolveQaVisionHelperConfig(): ApiConfig | null {
+    return loadApiConfigs().find((config) => config.enableImageRecognition === true) ?? null;
+}
+
+const QA_IMAGE_TRANSCRIBE_PROMPT = [
+    "你是工坊的识图助手。用户向产品答疑工程师求助时附上了截图，工程师本身看不到图片，只能读你的文字转写。",
+    "请逐张、客观、完整地转写图片内容：",
+    "1. 界面上的所有文字原样照抄，尤其是报错信息、弹窗、设置项名称、开关状态、输入框里填的值、代码与日志；",
+    "2. 简述界面布局：这是哪个 App / 页面，有哪些按钮和区域，哪些被选中或高亮；",
+    "3. 多张图时用「图1」「图2」分段。",
+    "只描述看到的内容，不要回答用户的问题，也不要猜测原因。密钥、令牌等敏感字符串只保留前 4 位，其余用 *** 代替。",
+].join("\n");
+
+/** 用识图助手把图片转写成文字；没有可用的识图 API 时抛出可读的错误 */
+export async function describeQaImages(images: string[], userText: string, signal?: AbortSignal): Promise<string> {
+    const config = resolveQaVisionHelperConfig();
+    if (!config) {
+        throw new Error("工坊当前模型未开启图像识别，也没有找到其他开启了图像识别的 API，无法识别图片。请到「设置 → API 设置」给一条支持视觉的 API 打开图像识别后重试。");
+    }
+    const parts: LLMContentPart[] = [
+        { type: "text", text: userText.trim() ? `用户随图附带的文字：${userText.trim()}` : "用户只发了图片，没有附带文字。" },
+        ...images.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+    ];
+    const messages: LlmRequestMessage[] = [
+        { role: "system", content: QA_IMAGE_TRANSCRIBE_PROMPT },
+        { role: "user", content: parts },
+    ];
+    const request = buildProviderRequest(config, null, messages, { maxTokens: 4000 });
+    const response = await fetchLlmPayload(request, { signal });
+    if (!response.ok) throw new Error(`识图 API ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    const parsed = parseProviderResponse(request.providerKind, await response.json());
+    const text = stripThinkBlocks(stripHallucinatedTimestamps(parsed.content || ""));
+    pushApiLog({
+        characterName: "工坊",
+        source: "qa",
+        channel: "qa",
+        model: config.defaultModel,
+        messages: request.messagesForLog.map((m) => ({
+            role: m.role,
+            content: typeof m.content === "string" ? m.content : "[vision: 含图片的多模态消息]",
+        })),
+        rawResponse: text || "（识图返回空内容）",
+    });
+    if (!text) throw new Error("识图模型返回了空内容，请换一张更清晰的图片，或换一条识图 API 重试。");
+    return text.slice(0, 20_000);
+}
+
 export function formatQaErrorMessage(error: unknown): string {
     if (error instanceof Error) return error.message;
     return String(error);

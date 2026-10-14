@@ -1,4 +1,4 @@
-import { callQaAgent, compactQaContext, formatQaErrorMessage, type QaContextEntry } from "./qa-agent-engine";
+import { callQaAgent, compactQaContext, describeQaImages, formatQaErrorMessage, qaApiSupportsVision, type QaContextEntry } from "./qa-agent-engine";
 import { QA_TOOLS, formatQaToolSubtitle, type QaCreatedContent, type QaProposedCommit } from "./qa-agent-tools";
 import { loadQaGithubConfig } from "./qa-github";
 import { commitQaFiles, revertQaCommit, type QaCommitResult } from "./qa-github-write";
@@ -637,6 +637,37 @@ export async function sendQaMessage(
     };
 
     try {
+        // 主模型不支持识图：先用识图助手把图片转写成文字，写回本轮上下文（只转一次，后续轮次复用文字）
+        if (images?.length && !qaApiSupportsVision()) {
+            const visionStatus: QaToolStatus = { name: "识图转文字", running: true, subtitle: `${images.length} 张图片` };
+            toolStatuses = [...toolStatuses, visionStatus];
+            segments = [...segments, { kind: "tool", tool: visionStatus }];
+            paintAssistant({ tools: toolStatuses, segments }, { force: true, persist: false });
+            const description = await describeQaImages(images, trimmed, controller.signal);
+            const visionDone: QaToolStatus = { ...visionStatus, running: false, success: true, result: clipForUi(description) };
+            toolStatuses = toolStatuses.map((t) => (t === visionStatus ? visionDone : t));
+            segments = segments.map((seg) =>
+                seg.kind === "tool" && seg.tool === visionStatus ? { kind: "tool" as const, tool: visionDone } : seg,
+            );
+            paintAssistant({ tools: toolStatuses, segments }, { force: true, persist: false });
+            updateSession(
+                sessionId,
+                (s) => ({
+                    ...s,
+                    context: sessionContext(s).map((entry) =>
+                        entry.role === "user" && entry.turn === assistantMsg.id && entry.images?.length
+                            ? {
+                                ...entry,
+                                images: undefined,
+                                content: `${entry.content}\n\n[图片识别结果：工坊模型不支持识图，以下是识图模型对 ${images.length} 张图片的文字转写]\n${description}`,
+                            }
+                            : entry,
+                    ),
+                }),
+                { persist: false },
+            );
+        }
+
         const history = (getActiveSession()?.messages ?? [])
             .filter((m) => m.id !== assistantMsg.id && !m.error)
             .map((m) => ({ role: m.role, content: m.content }));

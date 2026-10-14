@@ -1205,19 +1205,17 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
                 event.currentTarget.value = "";
               }}
             />
-            {visionEnabled && (
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                multiple
-                hidden
-                onChange={(event) => {
-                  handlePickImages(event.target.files, "composer");
-                  event.currentTarget.value = "";
-                }}
-              />
-            )}
+            <input
+              ref={imageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(event) => {
+                handlePickImages(event.target.files, "composer");
+                event.currentTarget.value = "";
+              }}
+            />
             <div className="qa-attach-menu-wrap">
               <button
                 type="button"
@@ -1234,12 +1232,10 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
                     <Paperclip size={15} />
                     上传附件
                   </button>
-                  {visionEnabled && (
-                    <button type="button" onClick={() => { imageInputRef.current?.click(); setAttachMenuOpen(false); }}>
-                      <ImageIcon size={15} />
-                      添加图片
-                    </button>
-                  )}
+                  <button type="button" onClick={() => { imageInputRef.current?.click(); setAttachMenuOpen(false); }}>
+                    <ImageIcon size={15} />
+                    {visionEnabled ? "添加图片" : "添加图片（识图转文字）"}
+                  </button>
                 </div>
               )}
             </div>
@@ -1442,19 +1438,17 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
                     event.currentTarget.value = "";
                   }}
                 />
-                {visionEnabled && (
-                  <input
-                    ref={editImageInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    hidden
-                    onChange={(event) => {
-                      handlePickImages(event.target.files, "edit");
-                      event.currentTarget.value = "";
-                    }}
-                  />
-                )}
+                <input
+                  ref={editImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  hidden
+                  onChange={(event) => {
+                    handlePickImages(event.target.files, "edit");
+                    event.currentTarget.value = "";
+                  }}
+                />
                 <div className="qa-attach-menu-wrap">
                   <button
                     type="button"
@@ -1471,12 +1465,10 @@ export function PhoneQaApp({ onClose, onNotice }: PhoneQaAppProps) {
                         <Paperclip size={15} />
                         上传附件
                       </button>
-                      {visionEnabled && (
-                        <button type="button" onClick={() => { editImageInputRef.current?.click(); setEditAttachMenuOpen(false); }}>
-                          <ImageIcon size={15} />
-                          添加图片
-                        </button>
-                      )}
+                      <button type="button" onClick={() => { editImageInputRef.current?.click(); setEditAttachMenuOpen(false); }}>
+                        <ImageIcon size={15} />
+                        {visionEnabled ? "添加图片" : "添加图片（识图转文字）"}
+                      </button>
                     </div>
                   )}
                 </div>
