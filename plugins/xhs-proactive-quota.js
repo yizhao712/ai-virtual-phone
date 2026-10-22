@@ -1,12 +1,13 @@
 // 主动刷小红书设置：每日冲浪配额 + 主动找话题（apiVersion 1）
-// 安装：聊天设置 → 扩展插件 → 选文件导入本文件，然后启用
-// 计数原理：小红书工具结果以 action_result 标签的形式出现在下一次 LLM 请求里，
-// 插件在 llm.request 中扫描、去重、计数。
+// 安装：聊天设置 → 扩展插件 → 导入插件，选择本文件后启用
+// 提示词在 prompt.system 注入；计数在 llm.request 里扫描小红书工具结果，去重后扣减。
 
 const TOOL_NAMES = ['xhs_list_feeds', 'xhs_search'];
 // xhs-mcp 成功时正文为「首页推荐共 N 条：」或「搜索结果共 N 条：」
 const SUCCESS_RE = /(?:首页推荐|搜索结果)共\s*\d+\s*条/;
 const ACTION_RE = /<action_result name="(xhs_list_feeds|xhs_search)"([^>]*)>([\s\S]*?)<\/action_result>/g;
+// 本插件注入的提示行：每次请求前先剥掉旧的，再按最新配额重写
+const OUR_LINE_RE = /\n*\[(?:今日小红书冲浪剩余配额|今日主动冲浪配额已用完|你们已经有一阵子没聊了|刚才的小红书工具没有成功)[^\]]*\]/g;
 const NON_CHAT_MEDIA = ['tool_call', 'tool_result', 'tool_notice', 'system_instruction'];
 const USER_REQUEST_WINDOW_MS = 10 * 60 * 1000; // 用户提到关键词后 10 分钟内的调用算用户要求
 const IDLE_MIN_GAP_MS = 3 * 60 * 1000;         // 最后一条是角色发的且用户沉默超过 3 分钟 → 角色主动开口
@@ -73,6 +74,30 @@ function extractXhsResults(messages) {
   return out;
 }
 
+// 剥离所有消息里本插件写过的提示行（复制消息对象，不改宿主原数据）；返回是否找到过
+function stripOurLines(messages) {
+  let found = false;
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (!m) continue;
+    if (typeof m.content === 'string') {
+      const next = m.content.replace(OUR_LINE_RE, '');
+      if (next !== m.content) { found = true; messages[i] = { ...m, content: next }; }
+    } else if (Array.isArray(m.content)) {
+      let changed = false;
+      const parts = m.content.map(part => {
+        if (part && typeof part.text === 'string') {
+          const next = part.text.replace(OUR_LINE_RE, '');
+          if (next !== part.text) { changed = true; return { ...part, text: next }; }
+        }
+        return part;
+      });
+      if (changed) { found = true; messages[i] = { ...m, content: parts }; }
+    }
+  }
+  return found;
+}
+
 // 追加到实际发出的系统提示词末尾（不改原对象，避免污染宿主历史）
 function appendSystem(p, text) {
   const first = p.messages[0];
@@ -92,7 +117,7 @@ export default {
     id: 'xhs-proactive-quota',
     name: '主动刷小红书设置',
     apiVersion: 1,
-    version: '1.0.0',
+    version: '1.0.1',
     description: '限制角色每天主动刷小红书的次数，配额内引导角色带着新鲜帖子主动找话题',
     permissions: ['chat.read', 'storage', 'ui'],
     settings: [
@@ -111,7 +136,9 @@ export default {
   setup(ctx) {
     const store = ctx.system.storage;
     const num = (key, fallback) => {
-      const v = Number(ctx.system.settings.get(key));
+      const raw = ctx.system.settings.get(key);
+      if (raw === undefined || raw === null || raw === '') return fallback;
+      const v = Number(raw);
       return Number.isFinite(v) ? Math.max(0, Math.floor(v)) : fallback;
     };
     const flag = (key, fallback) => {
@@ -141,14 +168,22 @@ export default {
       ctx.system.log(`扣减配额：${charId} 今日已用 ${q.used}`);
     }
 
-    // ── 会话与消息判断 ──
-    function resolveCharacterId(sessionId) {
-      const s = ctx.data.sessions.get(sessionId);
-      if (!s || s.isGroup) return null; // 群聊暂不计数
-      const c = ctx.data.contacts.list().find(x => x.id === s.contactId);
-      return c ? c.characterId : null;
+    // ── 会话 → 角色 ──
+    // 单聊会话的 contactId 在宿主里就是角色 id；兼容「联系人 id → 角色 id」的结构作兜底
+    function charIdOfSession(s) {
+      if (!s || s.isGroup || !s.contactId) return null; // 群聊暂不计数
+      if (ctx.data.characters.get(s.contactId)) return s.contactId;
+      const contacts = ctx.data.contacts.list();
+      const c = contacts.find(x => x.id === s.contactId) || contacts.find(x => x.characterId === s.contactId);
+      return c && c.characterId ? c.characterId : null;
     }
+    function resolveCharacterId(sessionId) {
+      return sessionId ? charIdOfSession(ctx.data.sessions.get(sessionId)) : null;
+    }
+
+    // ── 消息判断 ──
     function realMessages(sessionId) {
+      if (!sessionId) return [];
       return ctx.data.messages.list(sessionId)
         .filter(m => (m.role === 'user' || m.role === 'assistant') && !m.isRetracted && !NON_CHAT_MEDIA.includes(m.mediaType))
         .sort((a, b) => timeOf(a) - timeOf(b));
@@ -180,9 +215,37 @@ export default {
       return true;
     }
 
-    // ── 主逻辑：扫描结果计数 + 动态注入提示词 ──
+    // 按当前配额生成要注入的提示行
+    function buildLines(charId, sessionId, opts) {
+      const lines = [];
+      if (opts.retry) {
+        lines.push('[刚才的小红书工具没有成功返回内容，这次不占用配额，可以换个关键词或再调用一次重试]');
+      }
+      const rem = remaining(charId);
+      if (rem > 0) {
+        lines.push(`[今日小红书冲浪剩余配额: ${rem}次，可在闲聊或需要新话题时主动调用小红书工具]`);
+        if (flag('idleBoost', true) && !opts.justBrowsed && isProactive(sessionId)) {
+          lines.push('[你们已经有一阵子没聊了。主动开口前，优先调用小红书工具刷一下首页推荐或搜你感兴趣的话题，带着刷到的新鲜帖子或梗自然地去找对方聊，不要罗列结果]');
+        }
+      } else if (flag('hardStop', false)) {
+        lines.push('[今日主动冲浪配额已用完：除非用户明确要求，不要主动调用小红书工具]');
+      }
+      return lines;
+    }
+
+    // ── 提示词注入：单聊系统提示词组装时写入（宿主直接给出 characterId）──
+    ctx.hooks.transform('prompt.system', (p) => {
+      if (p.isGroup) return p;
+      const charId = p.characterId || resolveCharacterId(p.sessionId);
+      if (!charId) return p;
+      const lines = buildLines(charId, p.sessionId, {});
+      if (lines.length) p.hint = (p.hint ? p.hint + '\n' : '') + lines.join('\n');
+      return p;
+    });
+
+    // ── 计数：扫描请求里的小红书工具结果，并把提示行刷新为最新配额 ──
     ctx.hooks.transform('llm.request', (p) => {
-      if (p.purpose !== 'chat' || !p.sessionId || !Array.isArray(p.messages)) return p;
+      if (!p.sessionId || !Array.isArray(p.messages)) return p;
       const charId = resolveCharacterId(p.sessionId);
       if (!charId) return p;
 
@@ -210,39 +273,28 @@ export default {
         store.set('inited', [...inited].slice(-500));
       }
 
-      const lines = [];
-      if (newFailure && allowRetry(p.sessionId)) {
-        lines.push('[刚才的小红书工具没有成功返回内容，这次不占用配额，可以换个关键词或再调用一次重试]');
-      }
-      const rem = remaining(charId);
-      if (rem > 0) {
-        lines.push(`[今日小红书冲浪剩余配额: ${rem}次，可在闲聊或需要新话题时主动调用小红书工具]`);
-        if (flag('idleBoost', true) && newResults === 0 && isProactive(p.sessionId)) {
-          lines.push('[你们已经有一阵子没聊了。主动开口前，优先调用小红书工具刷一下首页推荐或搜你感兴趣的话题，带着刷到的新鲜帖子或梗自然地去找对方聊，不要罗列结果]');
-        }
-      } else if (flag('hardStop', false)) {
-        lines.push('[今日主动冲浪配额已用完：除非用户明确要求，不要主动调用小红书工具]');
-      }
+      // 先剥掉 prompt.system 写入的旧提示行，再按扣减后的最新配额重写；
+      // 既不是聊天主请求、也没带过本插件提示的请求（摘要等）不动
+      const hadLines = stripOurLines(p.messages);
+      if (!hadLines && p.purpose !== 'chat') return p;
+      const retry = newFailure && allowRetry(p.sessionId);
+      const lines = buildLines(charId, p.sessionId, { retry, justBrowsed: newResults > 0 });
       if (lines.length) appendSystem(p, lines.join('\n'));
       return p;
     });
 
-    // ── 设置区：各角色今日用量与手动调整 ──
+    // ── 设置区：各角色今日用量与手动调整（每 5 秒自动刷新）──
     ctx.ui.slot('settings.section', (el) => {
       const render = () => {
         el.replaceChildren();
-        el.style.cssText = 'display:flex;flex-direction:column;gap:8px;font-size:13px;';
+        el.style.cssText = 'display:flex;flex-direction:column;gap:8px;font-size:13px;padding:10px 16px 0;';
 
         const title = document.createElement('div');
         title.textContent = `今日配额（每日上限 ${dailyLimit()} 次，0 点自动重置）`;
         title.style.cssText = 'font-weight:600;';
         el.appendChild(title);
 
-        const contacts = ctx.data.contacts.list();
-        const ids = [...new Set(ctx.data.sessions.list()
-          .filter(s => !s.isGroup)
-          .map(s => (contacts.find(c => c.id === s.contactId) || {}).characterId)
-          .filter(Boolean))];
+        const ids = [...new Set(ctx.data.sessions.list().map(charIdOfSession).filter(Boolean))];
 
         if (!ids.length) {
           const empty = document.createElement('div');
@@ -280,8 +332,9 @@ export default {
         }
       };
       render();
-      const off = ctx.system.settings.onChange(render);
-      return () => off();
+      const offSettings = ctx.system.settings.onChange(render);
+      const offTimer = ctx.system.timers.setInterval(render, 5000);
+      return () => { offSettings(); offTimer(); };
     });
   },
 };
