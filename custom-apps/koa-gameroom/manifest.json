@@ -1,0 +1,34 @@
+{
+  "sdkVersion": "1.0",
+  "id": "koa.gameroom",
+  "name": "游戏室 · KOA",
+  "version": "2.3.0",
+  "author": "koa-sync",
+  "description": "把 KOA 里玩游戏产生的记忆接进小手机：多个游戏分开存档，从电脑云同步拉取游戏对话，在手机上继续聊，提炼要点写进长期记忆或发回电脑。",
+  "entry": "index.html",
+  "permissions": [
+    "app.data.read",
+    "app.data.write",
+    "characters.read",
+    "characters.relations.read",
+    "user.profile.read",
+    "user.persona.read",
+    "world.read",
+    "ai.generate",
+    "ai.chat",
+    "memory.readCore",
+    "memory.readLongTerm",
+    "memory.readShortTerm",
+    "memory.write",
+    "ui.toast",
+    "network.fetch"
+  ],
+  "network": {
+    "allowedDomains": ["koa.iloveanker.com.cn"],
+    "mode": "direct"
+  },
+  "resources": {
+    "presets": ["presets.json"]
+  },
+  "primaryTags": ["gameroom"]
+}
