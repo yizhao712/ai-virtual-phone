@@ -2299,6 +2299,32 @@ function VoiceMessageBubble({ msg, characterId, onUpdate, defaultTranslationExpa
 
     useEffect(() => () => { audioRef.current?.pause(); }, []);
 
+    // 自动生成（不播放）：开关默认关；只处理最近 60 秒内角色新发来的语音条；
+    // 每条消息只自动尝试一次，失败不重试（仍可手动点）。合成函数自带全局去重与落库。
+    useEffect(() => {
+        if (msg.role === "user" || !characterId || !needsResynthesis) return;
+        try {
+            if (window.localStorage.getItem("ai_phone_voice_auto_generate_v1") !== "1") return;
+            const age = Date.now() - new Date(msg.createdAt).getTime();
+            if (!Number.isFinite(age) || age < 0 || age > 60_000) return;
+            const triedKey = `ai_phone_voice_auto_tried_${msg.id}`;
+            if (window.sessionStorage.getItem(triedKey)) return;
+            window.sessionStorage.setItem(triedKey, "1");
+        } catch { return; }
+        setSynthesizing(true);
+        synthesizeVoiceForMessage(msg.id, characterId, speechText)
+            .then((dataUrl) => {
+                if (onUpdate) onUpdate({ ...msg, mediaUrl: dataUrl, mediaData: { ...msg.mediaData, synthesizedFromText: speechText } });
+                if (mountedRef.current) setSynthesizing(false);
+            })
+            .catch(() => {
+                if (!mountedRef.current) return;
+                setSynthesizing(false);
+                setSynthFailed(true);
+            });
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [msg.id]);
+
     // Wave bars — slightly irregular heights so the idle state already looks intentional.
     const barCount = Math.min(Math.max(4, Math.round(duration / 2)), 9);
     const barHeights = Array.from({ length: barCount }, (_, i) => {

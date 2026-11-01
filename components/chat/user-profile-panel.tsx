@@ -165,6 +165,13 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
     const [showPushSettings, setShowPushSettings] = useState(false);
     const [enterToSendEnabled, setEnterToSendEnabled] = useState(false);
     const [callVibrationEnabled, setCallVibrationEnabled] = useState(true);
+    const [voiceAutoGenerate, setVoiceAutoGenerate] = useState(() => {
+        try { return typeof window !== "undefined" && window.localStorage.getItem("ai_phone_voice_auto_generate_v1") === "1"; } catch { return false; }
+    });
+    const handleVoiceAutoGenerateToggle = (enabled: boolean) => {
+        setVoiceAutoGenerate(enabled);
+        try { window.localStorage.setItem("ai_phone_voice_auto_generate_v1", enabled ? "1" : "0"); } catch { /* ignore */ }
+    };
     const [userStats, setUserStats] = useState({ chats: 0, moments: 0, visitors: 1234 });
     const [walletSummary, setWalletSummary] = useState(() => {
         const wallet = loadWalletState();
@@ -447,6 +454,15 @@ export function UserProfilePanel({ onClose, className }: UserProfilePanelProps) 
                                 <span className="ts-11 text-[var(--c-text)] opacity-70">角色来电等待接听时手机振动（iOS 网页不支持振动）</span>
                             </div>
                             <Toggle checked={callVibrationEnabled} onChange={handleCallVibrationToggle} />
+                        </div>
+
+                        <div className="flex items-center gap-3 py-3 w-full border-b border-[color-mix(in_srgb,var(--c-card-border)_20%,transparent)]">
+                            <Vibrate size={18} className="text-[var(--c-icon)] opacity-70" strokeWidth={1.25}/>
+                            <div className="flex flex-col flex-1 text-left gap-0.5">
+                                <span className="ts-14 font-semibold text-[var(--c-text-title)]">语音条自动生成</span>
+                                <span className="ts-11 text-[var(--c-text)] opacity-70">角色发来新语音条时自动合成（不自动播放）。Minimax 按次计费</span>
+                            </div>
+                            <Toggle checked={voiceAutoGenerate} onChange={handleVoiceAutoGenerateToggle} />
                         </div>
 
                         <div className="flex items-center gap-3 py-3 w-full">
