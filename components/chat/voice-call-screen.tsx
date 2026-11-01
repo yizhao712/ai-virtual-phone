@@ -68,7 +68,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const holdToTalk = holdToTalkRef.current;
     const androidTextInputOnlyRef = useRef(isAndroidBrowser() && !holdToTalkRef.current);
     const androidTextInputOnly = androidTextInputOnlyRef.current;
-    const playCallAudio = iosDevice ? playAudioBlob : playAudioBlobViaMediaElement;
+    const playCallAudio = playAudioBlobViaMediaElement;
     const keyboardOffsetStyle = useCallKeyboardOffsetStyle();
     const [callState, setCallState] = useState<CallState>("CONNECTING");
     const hasConnectedRef = useRef(false);
