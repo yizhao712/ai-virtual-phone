@@ -23,6 +23,21 @@ import {
 } from "@/lib/chat-session-merge";
 import { kvSet } from "@/lib/kv-db";
 import { ChatFallbackAvatar } from "./chat-fallback-avatar";
+import { SwipeActionRow, useSwipeActions } from "@/components/ui/swipe-actions";
+import { kvGet } from "@/lib/kv-db";
+
+// 左滑「隐藏」的会话 id 列表：只是不在消息列表显示，聊天记录不动
+export const HIDDEN_SESSIONS_KEY = "ai_phone_hidden_sessions_v1";
+export function loadHiddenSessionIds(): string[] {
+    try {
+        const raw = kvGet(HIDDEN_SESSIONS_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch { return []; }
+}
+export function saveHiddenSessionIds(ids: string[]): void {
+    kvSet(HIDDEN_SESSIONS_KEY, JSON.stringify(ids));
+}
 import {
     getMascotLastPreview,
     getMascotChatSnapshot,
@@ -87,6 +102,7 @@ type ChatMessageListProps = {
 };
 
 export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, onSelectMascot }: ChatMessageListProps) {
+    const swipe = useSwipeActions(80);
     const [sessions, setSessions] = useState<ChatSession[]>([]);
     const [listFilter, setListFilter] = useState("");
     const [listTab, setListTab] = useState<"all" | "private" | "group">("all");
@@ -285,8 +301,10 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                             const showMascot = mascotSettings.chatEnabled
                                 && listTab !== "group"
                                 && (!keyword || (mascotSettings.nickname || "AI助手").toLowerCase().includes(keyword));
+                            const hiddenIds = new Set(loadHiddenSessionIds());
                             const regularItems = [...sessions]
                             .filter(s => {
+                                if (hiddenIds.has(s.id)) return false;
                                 if (!(s.isGroup || contactIds.has(s.contactId))) return false;
                                 if (!hasSessionListContent(s.id)) return false;
                                 if (listTab === "private" && s.isGroup) return false;
@@ -304,9 +322,31 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                                 return parseTime(bTime) - parseTime(aTime);
                             })
                             .map(s => (
-                                <div key={s.id}>
-                                    <SessionItem session={s} onSelect={() => onSelectSession(s)} isPinned={!!s.isPinned} />
-                                </div>
+                                <SwipeActionRow
+                                    key={s.id}
+                                    controller={swipe}
+                                    id={s.id}
+                                    actions={(
+                                        <button
+                                            type="button"
+                                            className="ui-btn ui-btn-danger"
+                                            style={{ width: 80, height: "100%", borderRadius: 0 }}
+                                            onClick={() => {
+                                                saveHiddenSessionIds([...loadHiddenSessionIds(), s.id]);
+                                                swipe.close();
+                                                setSessions(loadChatSessions());
+                                            }}
+                                        >
+                                            隐藏
+                                        </button>
+                                    )}
+                                >
+                                    <SessionItem
+                                        session={s}
+                                        onSelect={() => { if (!swipe.consumeClickSuppression()) onSelectSession(s); }}
+                                        isPinned={!!s.isPinned}
+                                    />
+                                </SwipeActionRow>
                             ));
                             if (!showMascot && regularItems.length === 0) {
                                 return (
@@ -570,6 +610,7 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                     onClose={() => setShowContactPicker(false)}
                     onSelect={(charId) => {
                         const session = createOrGetSession(charId);
+                        saveHiddenSessionIds(loadHiddenSessionIds().filter(id => id !== session.id));
                         setSessions(loadChatSessions());
                         onSelectSession(session);
                         setShowContactPicker(false);

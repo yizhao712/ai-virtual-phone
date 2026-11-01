@@ -450,26 +450,24 @@ export function ApiSettings() {
                                         <div className="flex flex-col gap-1">
                                             <label className="menu-desc ml-1">默认模型 (Default Model)</label>
                                             <div className="flex gap-2">
-                                                {fetchedModels[config.id] && fetchedModels[config.id].length > 0 ? (
-                                                    <select
-                                                        value={config.defaultModel}
-                                                        onChange={(e) => updateConfig(config.id, { defaultModel: e.target.value })}
-                                                        className="ui-select flex-1"
-                                                    >
-                                                        <option value="">请选择模型...</option>
-                                                        {fetchedModels[config.id].map(m => (
-                                                            <option key={m} value={m}>{m}</option>
-                                                        ))}
-                                                    </select>
-                                                ) : (
+                                                <div className="flex-1 min-w-0 flex flex-col gap-1">
                                                     <input
                                                         type="text"
+                                                        list={`models-${config.id}`}
                                                         value={config.defaultModel}
                                                         onChange={(e) => updateConfig(config.id, { defaultModel: e.target.value })}
-                                                        placeholder="gpt-4o, claude-3-opus..."
-                                                        className="ui-input flex-1"
+                                                        placeholder="直接输入模型名，或点输入框选择已拉取的模型"
+                                                        className="ui-input w-full"
                                                     />
-                                                )}
+                                                    <datalist id={`models-${config.id}`}>
+                                                        {(fetchedModels[config.id] ?? []).map(m => (
+                                                            <option key={m} value={m} />
+                                                        ))}
+                                                    </datalist>
+                                                    {config.defaultModel && (
+                                                        <span className="menu-desc ml-1 break-all">当前模型：{config.defaultModel}</span>
+                                                    )}
+                                                </div>
                                             </div>
                                         </div>
 

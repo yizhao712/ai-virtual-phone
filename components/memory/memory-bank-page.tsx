@@ -126,6 +126,8 @@ function MemorySettingsSliderItem({
     label,
     desc,
     value,
+    sliderValue,
+    displayValue,
     min,
     max,
     step,
@@ -136,6 +138,10 @@ function MemorySettingsSliderItem({
     label: string;
     desc: string;
     value: number;
+    /** 滑杆位置（缺省用 value），档位式滑杆用 */
+    sliderValue?: number;
+    /** 右侧显示文字（缺省用 value） */
+    displayValue?: number | string;
     min: number;
     max: number;
     step: number;
@@ -149,14 +155,14 @@ function MemorySettingsSliderItem({
                     <span className="menu-label">{label}</span>
                     <span className="menu-desc">{desc}</span>
                 </div>
-                <span className="ui-slider-value memory-slider-current">{value}</span>
+                <span className="ui-slider-value memory-slider-current">{displayValue ?? value}</span>
             </div>
             <input
                 type="range"
                 min={min}
                 max={max}
                 step={step}
-                value={value}
+                value={sliderValue ?? value}
                 onChange={e => onChange(Number(e.target.value))}
                 className="ui-slider memory-settings-slider"
                 aria-label={label}
@@ -1544,17 +1550,36 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 {/* Token budget sliders */}
                 <p className="menu-group-desc mx-2">控制截断量</p>
                 <div className="menu-group">
-                    <MemorySettingsSliderItem
-                        icon={Users}
-                        color={BINDING_ACCENTS.voice}
-                        label="短期记忆+最近上下文"
-                        desc="聊天历史、朋友圈、群聊与跨应用近期事件截断量"
-                        value={config.shortTermTokenBudget}
-                        min={MEMORY_TOKEN_BUDGET_MIN.shortTermTokenBudget}
-                        max={MEMORY_TOKEN_BUDGET_MAX}
-                        step={MEMORY_TOKEN_BUDGET_STEP.shortTermTokenBudget}
-                        onChange={value => saveBudget("shortTermTokenBudget", value)}
-                    />
+                    {(() => {
+                        // 档位：1000/2000/3000/5000，之后每格 +5000（10000、15000……）
+                        const fixed = [1000, 2000, 3000, 5000];
+                        const tickToValue = (tick: number) => tick < fixed.length ? fixed[tick] : 5000 + (tick - 3) * 5000;
+                        const maxTick = 3 + Math.floor((MEMORY_TOKEN_BUDGET_MAX - 5000) / 5000);
+                        const valueToTick = (v: number) => {
+                            const idx = fixed.indexOf(v);
+                            if (idx >= 0) return idx;
+                            if (v < fixed[0]) return 0;
+                            if (v > 5000) return Math.min(maxTick, 3 + Math.round((v - 5000) / 5000));
+                            // 旧值落在档位之间：取最近的档
+                            return fixed.reduce((best, f, i) => Math.abs(f - v) < Math.abs(fixed[best] - v) ? i : best, 0);
+                        };
+                        const tick = valueToTick(config.shortTermTokenBudget);
+                        return (
+                            <MemorySettingsSliderItem
+                                icon={Users}
+                                color={BINDING_ACCENTS.voice}
+                                label="短期记忆+最近上下文"
+                                desc="聊天历史、朋友圈、群聊与跨应用近期事件截断量"
+                                value={tickToValue(tick)}
+                                sliderValue={tick}
+                                displayValue={tickToValue(tick)}
+                                min={0}
+                                max={maxTick}
+                                step={1}
+                                onChange={t => saveBudget("shortTermTokenBudget", tickToValue(Math.round(t)))}
+                            />
+                        );
+                    })()}
                     <MemorySettingsSliderItem
                         icon={Archive}
                         color={BINDING_ACCENTS.memory}

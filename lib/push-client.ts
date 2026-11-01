@@ -40,9 +40,32 @@ export function savePushQuietHours(value: string): void {
     else kvRemove(QUIET_HOURS_KV);
 }
 
-/** 某个时间点是否落在安静时段内（支持跨零点，如 23:00-08:00）。格式非法视为未启用。 */
+// ── 按星期的安静时段：下标 0=周日 … 6=周六，每项 "23:00-08:00" 或空串（当天不免打扰）──
+const QUIET_WEEKLY_KV = "push_quiet_hours_weekly_v1";
+
+/** 读取每个星期的时段；没有按星期的设置时，把旧的单一时段当作每天相同 */
+export function loadPushQuietHoursWeekly(): string[] {
+    if (typeof window === "undefined") return Array(7).fill("");
+    try {
+        const raw = kvGet(QUIET_WEEKLY_KV);
+        const parsed = raw ? JSON.parse(raw) : null;
+        if (Array.isArray(parsed) && parsed.length === 7) return parsed.map(item => (typeof item === "string" ? item.trim() : ""));
+    } catch { /* fall through */ }
+    return Array(7).fill(loadPushQuietHours());
+}
+
+export function savePushQuietHoursWeekly(days: string[]): void {
+    if (typeof window === "undefined") return;
+    const normalized = Array.from({ length: 7 }, (_, i) => (days[i] ?? "").trim());
+    kvSet(QUIET_WEEKLY_KV, JSON.stringify(normalized));
+    // 兼容：旧代码读取的单一时段，取周一的设置（没有则空）
+    savePushQuietHours(normalized[1] || normalized.find(Boolean) || "");
+}
+
+/** 某个时间点是否落在安静时段内（支持跨零点，如 23:00-08:00）。按星期取时段；格式非法视为未启用。 */
 export function isWithinPushQuietHours(atMs: number): boolean {
-    const setting = loadPushQuietHours();
+    const dayIndex = new Date(atMs).getDay();
+    const setting = loadPushQuietHoursWeekly()[dayIndex] ?? "";
     const match = setting.match(/^(\d{1,2}):(\d{2})\s*[-~—]\s*(\d{1,2}):(\d{2})$/);
     if (!match) return false;
     const startMinutes = Number(match[1]) * 60 + Number(match[2]);

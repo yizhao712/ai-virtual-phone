@@ -25,12 +25,12 @@ import { loadCharacters } from "@/lib/character-storage";
 import { triggerImmediatePost } from "@/lib/moments-engine";
 import type { Character } from "@/lib/character-types";
 import { requestNotificationPermission } from "@/lib/browser-notification";
-import { disableOfflinePush, enableOfflinePush, getOfflinePushState, isShellEnvironment, loadPushQuietHours, savePushQuietHours, sendTestOfflinePush, type OfflinePushState } from "@/lib/push-client";
+import { disableOfflinePush, enableOfflinePush, getOfflinePushState, isShellEnvironment, loadPushQuietHours, loadPushQuietHoursWeekly, savePushQuietHours, savePushQuietHoursWeekly, sendTestOfflinePush, type OfflinePushState } from "@/lib/push-client";
 import { isPersonalPushCloudActive, setPersonalPushCloudScheduled } from "@/lib/personal-push-cloud";
 import { loadPushCloudScheduled, savePushCloudScheduled } from "@/lib/cloud-deploy-status";
 import { armIdleReconnectBailout, armTimedWakeBailout, cancelBailoutKey, cancelBailoutPrefix } from "@/lib/push-bailout-client";
 import { loadTimedWakeSchedules, makeTimedWakeId, removeTimedWakeSchedule, saveTimedWakeSchedule, loadPausedTimedWakeSchedules, pauseTimedWakeSchedule, resumeTimedWakeSchedule, removePausedTimedWakeSchedule, type TimedWakeSchedule, type PausedTimedWakeSchedule } from "@/lib/timed-wake-storage";
-import { IDLE_RECONNECT_MAX_CONSECUTIVE, loadIdleReconnectRules, removeIdleReconnectRule, upsertIdleReconnectRule, type IdleReconnectRule } from "@/lib/idle-reconnect-storage";
+import { IDLE_RECONNECT_MAX_CONSECUTIVE, loadIdleReconnectRules, removeIdleReconnectRule, upsertIdleReconnectRule, loadPausedIdleReconnectRules, pauseIdleReconnectRule, resumeIdleReconnectRule, removePausedIdleReconnectRule, type IdleReconnectRule } from "@/lib/idle-reconnect-storage";
 import { addChatContact, createOrGetSession } from "@/lib/chat-storage";
 import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
 import { formatWalletAmount, getWalletBalance, loadWalletState, WALLET_UPDATED_EVENT } from "@/lib/wallet-storage";
@@ -1203,6 +1203,7 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
     const [quietEnd, setQuietEnd] = useState(storedQuiet ? `${storedQuiet[3].padStart(2, "0")}:${storedQuiet[4]}` : "08:00");
     const [timedSchedules, setTimedSchedules] = useState<TimedWakeSchedule[]>([]);
     const [pausedSchedules, setPausedSchedules] = useState<PausedTimedWakeSchedule[]>([]);
+    const [pausedIdleRules, setPausedIdleRules] = useState<IdleReconnectRule[]>([]);
     const [idleRules, setIdleRules] = useState<IdleReconnectRule[]>([]);
     const [tmMode, setTmMode] = useState<"idle" | "once">("idle");
     const [tmCharId, setTmCharId] = useState("");
@@ -1216,6 +1217,7 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
     const refreshTimedSchedules = () => {
         setTimedSchedules(loadTimedWakeSchedules().slice().sort((a, b) => a.fireAt - b.fireAt));
         setPausedSchedules(loadPausedTimedWakeSchedules().slice().sort((a, b) => a.pausedAt - b.pausedAt));
+        setPausedIdleRules(loadPausedIdleReconnectRules());
         setIdleRules(loadIdleReconnectRules().slice().sort((a, b) => a.createdAt - b.createdAt));
     };
 
@@ -1266,6 +1268,17 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
         savePushQuietHours(enabled && start && end ? `${start}-${end}` : "");
     };
 
+    // 按星期的安静时段：下标 0=周日 … 6=周六，空串=当天不免打扰
+    const [quietWeekly, setQuietWeekly] = useState<string[]>(() => loadPushQuietHoursWeekly());
+    const updateQuietDay = (day: number, start: string, end: string, enabled: boolean) => {
+        const next = [...quietWeekly];
+        next[day] = enabled && start && end ? `${start}-${end}` : "";
+        setQuietWeekly(next);
+        savePushQuietHoursWeekly(next);
+    };
+    const WEEKDAY_LABELS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+    const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+
     const UNIT_MS = { minute: 60_000, hour: 3_600_000, day: 86_400_000 } as const;
     const UNIT_LABEL = { minute: "分钟", hour: "小时", day: "天" } as const;
 
@@ -1296,6 +1309,26 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
         setTmHint(armResult.ok
             ? `已创建：超过 ${amount}${UNIT_LABEL[tmIdleUnit]}没消息时，TA 会主动来找你；服务端离线推送已预约。`
             : `已创建本地规则，但离线推送未预约成功：${armResult.reason}`);
+        refreshTimedSchedules();
+    };
+
+    const handlePauseIdleRule = (rule: IdleReconnectRule) => {
+        if (!pauseIdleReconnectRule(rule.id)) return;
+        void cancelBailoutPrefix(`idle:${rule.id}:`);
+        setTmHint("已暂停追发，规则保留，点「启用」恢复。");
+        refreshTimedSchedules();
+    };
+
+    const handleResumeIdleRule = async (rule: IdleReconnectRule) => {
+        const resumed = resumeIdleReconnectRule(rule.id);
+        if (!resumed) return;
+        refreshTimedSchedules();
+        const armResult = await armIdleReconnectBailout(resumed);
+        setTmHint(armResult.ok ? "已重新启用，离线推送已预约。" : `已重新启用本地规则，但离线推送未预约成功：${armResult.reason}`);
+    };
+
+    const handleDeletePausedIdleRule = (rule: IdleReconnectRule) => {
+        removePausedIdleReconnectRule(rule.id);
         refreshTimedSchedules();
     };
 
@@ -1461,28 +1494,30 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                     onChange={enabled => { setQuietEnabled(enabled); persistQuietHours(enabled, quietStart, quietEnd); }}
                                 />
                             </div>
-                            {quietEnabled && (
-                                <div className="menu-item">
-                                    <div className="menu-label-group">
-                                        <span className="menu-label">时段</span>
+                            {quietEnabled && WEEKDAY_ORDER.map(day => {
+                                const match = (quietWeekly[day] || "").match(/^(\d{1,2}):(\d{2})-(\d{1,2}):(\d{2})$/);
+                                const dayOn = Boolean(match);
+                                const dStart = match ? `${match[1].padStart(2, "0")}:${match[2]}` : quietStart;
+                                const dEnd = match ? `${match[3].padStart(2, "0")}:${match[4]}` : quietEnd;
+                                return (
+                                    <div className="menu-item" key={day}>
+                                        <div className="menu-label-group">
+                                            <span className="menu-label">{WEEKDAY_LABELS[day]}</span>
+                                            <span className="menu-desc">{dayOn ? "免打扰" : "不设置"}</span>
+                                        </div>
+                                        <div className="menu-right flex items-center gap-1">
+                                            {dayOn && (
+                                                <>
+                                                    <input type="time" className="border-none outline-none bg-transparent ts-13 text-[var(--c-text)]" value={dStart} onChange={e => updateQuietDay(day, e.target.value, dEnd, true)} />
+                                                    <span className="ts-13 opacity-60">至</span>
+                                                    <input type="time" className="border-none outline-none bg-transparent ts-13 text-[var(--c-text)]" value={dEnd} onChange={e => updateQuietDay(day, dStart, e.target.value, true)} />
+                                                </>
+                                            )}
+                                            <Toggle checked={dayOn} onChange={on => updateQuietDay(day, dStart, dEnd, on)} />
+                                        </div>
                                     </div>
-                                    <div className="menu-right flex items-center gap-1">
-                                        <input
-                                            type="time"
-                                            className="border-none outline-none bg-transparent ts-13 text-[var(--c-text)]"
-                                            value={quietStart}
-                                            onChange={e => { setQuietStart(e.target.value); persistQuietHours(true, e.target.value, quietEnd); }}
-                                        />
-                                        <span className="ts-13 opacity-60">至</span>
-                                        <input
-                                            type="time"
-                                            className="border-none outline-none bg-transparent ts-13 text-[var(--c-text)]"
-                                            value={quietEnd}
-                                            onChange={e => { setQuietEnd(e.target.value); persistQuietHours(true, quietStart, e.target.value); }}
-                                        />
-                                    </div>
-                                </div>
-                            )}
+                                );
+                            })}
                         </div>
                         <p className="menu-group-desc mx-2">
                             {offlinePushHint || (isShellApp
@@ -1605,7 +1640,10 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                             <span className="menu-label">{charName} · 沉默超过 {intervalLabel}（连发 {rule.consecutiveCount}/{IDLE_RECONNECT_MAX_CONSECUTIVE}）</span>
                                             <span className="menu-desc" style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>长时间没消息时主动来找你</span>
                                         </div>
-                                        <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeleteIdleRule(rule)}>删除</button>
+                                        <div className="menu-right flex items-center gap-2">
+                                            <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap" }} onClick={() => handlePauseIdleRule(rule)}><Pause size={14} /> 暂停</button>
+                                            <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeleteIdleRule(rule)}>删除</button>
+                                        </div>
                                     </div>
                                 );
                             })}
@@ -1628,6 +1666,28 @@ function OfflinePushSettingsPage({ onBack }: { onBack: () => void }) {
                                                 <Pause size={14} /> 暂停
                                             </button>
                                             <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeleteTimedMsg(schedule)}>删除</button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </>
+                )}
+                {pausedIdleRules.length > 0 && (
+                    <>
+                        <p className="menu-group-desc mx-2">已暂停（长时间没消息时）</p>
+                        <div className="menu-group">
+                            {pausedIdleRules.map(rule => {
+                                const charName = loadCharacters().find(c => c.id === rule.characterId)?.name ?? "未知角色";
+                                return (
+                                    <div key={rule.id} className="menu-item">
+                                        <div className="menu-label-group" style={{ minWidth: 0, flex: 1 }}>
+                                            <span className="menu-label">{charName} · 沉默超过 {rule.intervalMinutes} 分钟</span>
+                                            <span className="menu-desc">已暂停追发，点启用恢复</span>
+                                        </div>
+                                        <div className="menu-right flex items-center gap-2">
+                                            <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap" }} onClick={() => void handleResumeIdleRule(rule)}><Play size={14} /> 启用</button>
+                                            <button className="ui-btn ui-btn-outline py-1 px-3 ts-12" style={{ whiteSpace: "nowrap", color: "var(--c-danger)" }} onClick={() => handleDeletePausedIdleRule(rule)}>删除</button>
                                         </div>
                                     </div>
                                 );

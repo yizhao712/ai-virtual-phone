@@ -46,6 +46,47 @@ export function getIdleReconnectEffectiveMinutes(rule: IdleReconnectRule): numbe
     return Math.max(1, Math.round(rule.intervalMinutes * jitter * backoff));
 }
 
+// ── 暂停 / 启用：暂停 = 规则从生效列表移到暂停列表（不再触发），启用 = 移回并清零连发计数 ──
+export const IDLE_RECONNECT_PAUSED_KEY = "ai_phone_idle_reconnect_paused_v1";
+registerKvMigration(IDLE_RECONNECT_PAUSED_KEY);
+
+export function loadPausedIdleReconnectRules(): IdleReconnectRule[] {
+    if (typeof window === "undefined") return [];
+    try {
+        const raw = kvGet(IDLE_RECONNECT_PAUSED_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed.filter(isRule) : [];
+    } catch {
+        return [];
+    }
+}
+
+function savePausedIdleReconnectRules(rules: IdleReconnectRule[]): void {
+    if (typeof window === "undefined") return;
+    kvSet(IDLE_RECONNECT_PAUSED_KEY, JSON.stringify(rules.slice(0, 100)));
+}
+
+export function pauseIdleReconnectRule(id: string): IdleReconnectRule | null {
+    const rule = loadIdleReconnectRules().find(item => item.id === id);
+    if (!rule) return null;
+    removeIdleReconnectRule(id);
+    savePausedIdleReconnectRules([...loadPausedIdleReconnectRules().filter(item => item.id !== id), rule]);
+    return rule;
+}
+
+export function resumeIdleReconnectRule(id: string): IdleReconnectRule | null {
+    const paused = loadPausedIdleReconnectRules().find(item => item.id === id);
+    if (!paused) return null;
+    savePausedIdleReconnectRules(loadPausedIdleReconnectRules().filter(item => item.id !== id));
+    const rule: IdleReconnectRule = { ...paused, consecutiveCount: 0, lastFiredAt: undefined, suppressedUntil: undefined };
+    upsertIdleReconnectRule(rule);
+    return rule;
+}
+
+export function removePausedIdleReconnectRule(id: string): void {
+    savePausedIdleReconnectRules(loadPausedIdleReconnectRules().filter(item => item.id !== id));
+}
+
 function isRule(value: unknown): value is IdleReconnectRule {
     if (!value || typeof value !== "object") return false;
     const item = value as Partial<IdleReconnectRule>;
