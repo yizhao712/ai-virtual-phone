@@ -1110,6 +1110,9 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
     const [activeOfflineTarget, setActiveOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineTarget, setEditingOfflineTarget] = useState<OfflineActionTarget | null>(null);
     const [editingOfflineContent, setEditingOfflineContent] = useState("");
+    // 重试指导弹窗：点「重试以下」后先问一句要不要补充指导
+    const [retryDialog, setRetryDialog] = useState<null | { kind: "online"; id: string } | { kind: "offline"; id: string }>(null);
+    const [retryHint, setRetryHint] = useState("");
     const [regexRevision, setRegexRevision] = useState(0);
     // Whether there are unsent user messages waiting for AI generation
     const [pendingGenerate, setPendingGenerate] = useState(false);
@@ -4276,7 +4279,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         setActiveOfflineTarget(null);
     };
 
-    const handleOfflineRetryFrom = async (turnId: string) => {
+    const handleOfflineRetryFrom = async (turnId: string, hint?: string) => {
         if (isOfflineGenerating) {
             showChatToast("线下回复生成中");
             return;
@@ -4309,7 +4312,11 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         const isCurrentOfflineRun = () => isOfflineGenerationRunActive(session.id, offlineRunId);
 
         try {
-            const history = buildOfflinePromptHistory(baseTurns, retryInput);
+            // 指导只拼在发给模型的这一轮输入后面，保存的历史仍是原输入
+            const history = buildOfflinePromptHistory(
+                baseTurns,
+                hint?.trim() ? `${retryInput}\n\n[系统指令：本次重试请遵循以下指导：${hint.trim()}]` : retryInput,
+            );
             const onOfflineDelta = (delta: string) => {
                 if (!isCurrentOfflineRun()) return;
                 offlineStreamAccumRef.current += delta;
@@ -4365,7 +4372,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         }
     };
 
-    const handleRetry = async (msgId: string) => {
+    const handleRetry = async (msgId: string, hint?: string) => {
         const msgIndex = messages.findIndex(m => m.id === msgId);
         if (msgIndex === -1 || messages[msgIndex].role !== "assistant") return;
 
@@ -4380,7 +4387,18 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
         cancelFollowUp(session.id);
 
         await runManagedGeneration({
-            history: contextMessages,
+            // 重试指导只加在本次请求的末尾，不写入聊天记录
+            history: hint?.trim()
+                ? [...contextMessages, {
+                    id: `${TRANSIENT_MESSAGE_PREFIX}retry-hint`,
+                    sessionId: session.id,
+                    role: "system" as const,
+                    content: `本次重试请遵循以下指导：${hint.trim()}`,
+                    status: "sent" as const,
+                    createdAt: new Date().toISOString(),
+                    mediaType: "system_instruction" as const,
+                }]
+                : contextMessages,
             errorPrefix: "重试失败",
             onDecline: triggerReply,
         });
@@ -4859,7 +4877,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                 <div className="flex">
                     <button onClick={() => { copyTextToClipboard(getOfflineCopyText(turn, role)); setActiveOfflineTarget(null); }} className="ctx-menu-btn">复制</button>
                     <button onClick={() => handleOfflineEditStart(turn, role)} className="ctx-menu-btn">编辑</button>
-                    <button onClick={() => void handleOfflineRetryFrom(turn.id)} className="ctx-menu-btn ctx-menu-btn-danger">重试以下</button>
+                    <button onClick={() => { setActiveOfflineTarget(null); setRetryHint(""); setRetryDialog({ kind: "offline", id: turn.id }); }} className="ctx-menu-btn ctx-menu-btn-danger">重试以下</button>
                 </div>
                 <div className="flex">
                     <button onClick={() => handleOfflineDeleteTurn(turn.id)} className="ctx-menu-btn ctx-menu-btn-danger">删除</button>
@@ -4915,7 +4933,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                         <button onClick={() => handleRetractMessage(storedMessageId)} className="ctx-menu-btn">撤回消息</button>
                     )}
                     {m.role === "assistant" && (
-                        <button onClick={() => handleRetry(storedMessageId)} className="ctx-menu-btn ctx-menu-btn-danger">重试以下</button>
+                        <button onClick={() => { closeContextMenu(); setRetryHint(""); setRetryDialog({ kind: "online", id: storedMessageId }); }} className="ctx-menu-btn ctx-menu-btn-danger">重试以下</button>
                     )}
                 </div>
                 <div className="flex">
@@ -6623,6 +6641,42 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                     }}
                     onClose={() => setMediaDetailMsg(null)}
                 />
+            )}
+
+            {retryDialog && (
+                <div className="chat-html-overlay" onClick={() => setRetryDialog(null)}>
+                    <div
+                        className="g-card w-[min(84vw,420px)] max-h-[78vh] p-4 flex flex-col gap-3"
+                        onClick={(e) => e.stopPropagation()}
+                    >
+                        <div className="flex flex-col gap-1">
+                            <span className="menu-label">重试以下</span>
+                            <span className="menu-desc !mt-0">可以补充一句指导（例如“更简短”“多写动作细节”），只对这一次重试生效，不会写进聊天记录。留空则直接重试。</span>
+                        </div>
+                        <textarea
+                            autoFocus
+                            value={retryHint}
+                            onChange={(e) => setRetryHint(e.target.value)}
+                            placeholder="重试指导（可选）"
+                            className="w-full min-h-[110px] max-h-[40vh] resize-none rounded-2xl border border-[var(--c-border)] bg-[var(--c-input)] px-4 py-3 ts-14 text-[var(--c-text)] outline-none"
+                        />
+                        <div className="flex justify-end gap-2">
+                            <button type="button" className="ui-btn ui-btn-outline" onClick={() => setRetryDialog(null)}>取消</button>
+                            <button
+                                type="button"
+                                className="ui-btn ui-btn-primary"
+                                onClick={() => {
+                                    const target = retryDialog;
+                                    const hint = retryHint;
+                                    setRetryDialog(null);
+                                    setRetryHint("");
+                                    if (target.kind === "online") void handleRetry(target.id, hint);
+                                    else void handleOfflineRetryFrom(target.id, hint);
+                                }}
+                            >{retryHint.trim() ? "带指导重试" : "直接重试"}</button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {editingOfflineTarget && (
