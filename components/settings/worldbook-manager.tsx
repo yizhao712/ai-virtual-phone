@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, useContext, useCallback } from "react";
-import { Plus, BookOpen, Trash2, Upload, Download, ChevronLeft, AlertCircle, Maximize2, Replace } from "lucide-react";
+import { Plus, BookOpen, Trash2, Upload, Download, ChevronLeft, AlertCircle, Maximize2, Replace, GripVertical } from "lucide-react";
+import { useTouchSort } from "@/lib/use-touch-sort";
 import {
     loadWorldBooks,
     saveWorldBooks,
@@ -327,6 +328,62 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
     // ── 条目左滑操作（微信式：左滑露出「新增/删除」） ──
     const swipe = useSwipeActions();
 
+    // 条目长按拖动排序：数组顺序即显示顺序（悬浮球读同一份数据）
+    const handleEntryReorder = (from: number, to: number) => {
+        if (!activeBook) return;
+        const entries = [...(activeBook.entries || [])];
+        if (from < 0 || to < 0 || from >= entries.length || to >= entries.length) return;
+        const [moved] = entries.splice(from, 1);
+        entries.splice(to, 0, moved);
+        updateBook(activeBook.id, { entries });
+    };
+    const { containerRef: entryListRef, onTouchStart: onEntryTouchStart, onTouchMove: onEntryTouchMove, onTouchEnd: onEntryTouchEnd } = useTouchSort(handleEntryReorder, 400);
+
+    // 世界书卡片拖动排序（两列网格）：按住把手拖到目标卡片上松手
+    const startBookDrag = (e: React.PointerEvent, id: string) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const card = (e.currentTarget as HTMLElement).closest("[data-book-id]") as HTMLElement | null;
+        if (!card) return;
+        const sx = e.clientX, sy = e.clientY;
+        let lx = sx, ly = sy;
+        card.style.zIndex = "5";
+        card.style.transition = "none";
+        card.style.boxShadow = "0 8px 24px rgba(0,0,0,0.25)";
+        const onMove = (ev: PointerEvent) => {
+            lx = ev.clientX; ly = ev.clientY;
+            card.style.transform = `translate(${lx - sx}px, ${ly - sy}px)`;
+        };
+        const blockScroll = (ev: TouchEvent) => { ev.preventDefault(); };
+        const onEnd = () => {
+            window.removeEventListener("pointermove", onMove);
+            window.removeEventListener("pointerup", onEnd);
+            window.removeEventListener("pointercancel", onEnd);
+            window.removeEventListener("touchmove", blockScroll);
+            card.style.transform = "";
+            card.style.zIndex = "";
+            card.style.transition = "";
+            card.style.boxShadow = "";
+            const targetCard = document
+                .elementsFromPoint(lx, ly)
+                .map(el => el.closest("[data-book-id]") as HTMLElement | null)
+                .find(el => el && el !== card);
+            const toId = targetCard?.dataset.bookId;
+            if (!toId || toId === id) return;
+            const from = books.findIndex(b => b.id === id);
+            const to = books.findIndex(b => b.id === toId);
+            if (from < 0 || to < 0) return;
+            const next = [...books];
+            const [moved] = next.splice(from, 1);
+            next.splice(to, 0, moved);
+            persist(next);
+        };
+        window.addEventListener("pointermove", onMove);
+        window.addEventListener("pointerup", onEnd);
+        window.addEventListener("pointercancel", onEnd);
+        window.addEventListener("touchmove", blockScroll, { passive: false });
+    };
+
     const makeNewEntry = (): WorldBookEntry => ({
         uid: `wb-entry-${Date.now()}`,
         key: "",
@@ -502,6 +559,7 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
                                     style={{ aspectRatio: "3 / 2", padding: "12px", justifyContent: "space-between" }}
                                     role="button"
                                     tabIndex={0}
+                                    data-book-id={book.id}
                                     aria-label={`编辑 ${book.name || "世界书"}`}
                                     onClick={() => { setActiveBookId(book.id); setViewMode("detail"); }}
                                     onKeyDown={(event) => {
@@ -522,7 +580,19 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
                                     </div>
                                     <div className="flex items-center justify-between gap-2">
                                         <span className="menu-desc ts-12">条目 {book.entries?.length || 0}</span>
-                                        <ChevronLeft size={16} className="opacity-40" style={{ transform: "rotate(180deg)" }} />
+                                        <span className="flex items-center gap-1">
+                                            <span
+                                                role="button"
+                                                aria-label="按住拖动排序"
+                                                title="按住拖动排序"
+                                                style={{ touchAction: "none", cursor: "grab", opacity: 0.6, padding: "4px" }}
+                                                onClick={(ev) => ev.stopPropagation()}
+                                                onPointerDown={(ev) => startBookDrag(ev, book.id)}
+                                            >
+                                                <GripVertical size={16} />
+                                            </span>
+                                            <ChevronLeft size={16} className="opacity-40" style={{ transform: "rotate(180deg)" }} />
+                                        </span>
                                     </div>
                                 </div>
                             ))}
@@ -583,18 +653,22 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
                             <h2 className="mx-2 mb-0 mt-2 ts-20 font-bold leading-none text-black">Worldbook Entries ({activeBook.entries?.length || 0})</h2>
 
                             {/* Entry Cards */}
-                            <div className="flex flex-col gap-2">
+                            <div ref={entryListRef} className="flex flex-col gap-2"
+                                onTouchMove={onEntryTouchMove}
+                                onTouchEnd={onEntryTouchEnd}
+                                onTouchCancel={onEntryTouchEnd}
+                            >
                                 {visibleEntries.length === 0 ? (
                                     <div className="menu-desc text-center mt-10 ts-14">
                                         没找到相关的世界书条目
                                     </div>
                                 ) : (
-                                    visibleEntries.map(entry => {
+                                    visibleEntries.map((entry, entryIndex) => {
                                         const isEditing = editingUid === entry.uid;
 
                                         return (
+                                            <div key={entry.uid} onTouchStart={(ev) => onEntryTouchStart(entryIndex, ev)}>
                                             <SwipeActionRow
-                                                key={entry.uid}
                                                 controller={swipe}
                                                 id={entry.uid}
                                                 disabled={isEditing}
@@ -834,6 +908,7 @@ export function WorldBookManager({ isActive = true }: { isActive?: boolean } = {
                                                 )}
                                             </div>
                                             </SwipeActionRow>
+                                            </div>
                                         )
                                     })
                                 )}
