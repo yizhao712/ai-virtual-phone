@@ -1550,36 +1550,6 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 {/* Token budget sliders */}
                 <p className="menu-group-desc mx-2">控制截断量</p>
                 <div className="menu-group">
-                    {(() => {
-                        // 档位：1000/2000/3000/5000，之后每格 +5000（10000、15000……）
-                        const fixed = [1000, 2000, 3000, 5000];
-                        const tickToValue = (tick: number) => tick < fixed.length ? fixed[tick] : 5000 + (tick - 3) * 5000;
-                        const maxTick = 3 + Math.floor((MEMORY_TOKEN_BUDGET_MAX - 5000) / 5000);
-                        const valueToTick = (v: number) => {
-                            const idx = fixed.indexOf(v);
-                            if (idx >= 0) return idx;
-                            if (v < fixed[0]) return 0;
-                            if (v > 5000) return Math.min(maxTick, 3 + Math.round((v - 5000) / 5000));
-                            // 旧值落在档位之间：取最近的档
-                            return fixed.reduce((best, f, i) => Math.abs(f - v) < Math.abs(fixed[best] - v) ? i : best, 0);
-                        };
-                        const tick = valueToTick(config.shortTermTokenBudget);
-                        return (
-                            <MemorySettingsSliderItem
-                                icon={Users}
-                                color={BINDING_ACCENTS.voice}
-                                label="短期记忆+最近上下文"
-                                desc="聊天历史、朋友圈、群聊与跨应用近期事件截断量"
-                                value={tickToValue(tick)}
-                                sliderValue={tick}
-                                displayValue={tickToValue(tick)}
-                                min={0}
-                                max={maxTick}
-                                step={1}
-                                onChange={t => saveBudget("shortTermTokenBudget", tickToValue(Math.round(t)))}
-                            />
-                        );
-                    })()}
                     <MemorySettingsSliderItem
                         icon={Archive}
                         color={BINDING_ACCENTS.memory}

@@ -44,6 +44,7 @@ import { downloadFile } from "@/lib/download-utils";
 import { getSchemes, saveScheme, deleteScheme, type CSSScheme } from "@/lib/css-scheme-storage";
 import { CustomStatusFrame } from "@/components/chat/custom-status-frame";
 import { KeyboardAutoSendDebounceItem } from "@/components/chat/keyboard-auto-send-debounce-item";
+import { loadMemoryConfig, saveMemoryConfig } from "@/lib/memory-storage";
 import { ChevronRight, Image as ImageIcon, Video, Mic, UserMinus, UserPlus, Users, Pin, MessageSquare, Search, AlertCircle, Code, Laptop, Trash2, Smile, Sparkles, X, Play, Upload, Download, Save, FolderOpen, type LucideIcon } from "lucide-react";
 import { BINDING_ACCENTS, CONTENT_APP_ACCENTS } from "@/lib/ui-accent-colors";
 import CSSSchemeBar from "@/components/ui/css-scheme-picker";
@@ -396,6 +397,8 @@ export function ChatSettingsPanel({
     // 流式生成：按会话区分（线上/线下），存 ChatSession 字段，默认关
     const [streamOnline, setStreamOnline] = useState(session.streamOnline === true);
     const [streamOffline, setStreamOffline] = useState(session.streamOffline === true);
+    // 短期记忆+最近上下文截断量（全局设置，所有角色共用）
+    const [shortTermBudget, setShortTermBudget] = useState<number>(() => loadMemoryConfig().shortTermTokenBudget);
     const defaultBilingualPrompt = session.isGroup ? DEFAULT_GROUP_CHAT_BILINGUAL_PROMPT : DEFAULT_CHAT_BILINGUAL_PROMPT;
     const defaultOfflineBilingualPrompt = session.isGroup ? DEFAULT_GROUP_OFFLINE_CHAT_BILINGUAL_PROMPT : DEFAULT_OFFLINE_CHAT_BILINGUAL_PROMPT;
     const [bilingualTranslationPrompt, setBilingualTranslationPrompt] = useState(session.bilingualTranslationPrompt || defaultBilingualPrompt);
@@ -984,6 +987,47 @@ export function ChatSettingsPanel({
                         )}
                     </div>
                 )}
+
+                {/* 上下文长度：短期记忆+最近上下文截断量（从记忆库设置挪来） */}
+                <div className="menu-group">
+                    {(() => {
+                        // 档位：1000/2000/3000/5000，之后每格 +5000
+                        const fixed = [1000, 2000, 3000, 5000];
+                        const maxTick = 3 + Math.floor((100000 - 5000) / 5000);
+                        const tickToValue = (tick: number) => tick < fixed.length ? fixed[tick] : 5000 + (tick - 3) * 5000;
+                        const valueToTick = (v: number) => {
+                            if (v > 5000) return Math.min(maxTick, 3 + Math.round((v - 5000) / 5000));
+                            return fixed.reduce((best, f, i) => Math.abs(f - v) < Math.abs(fixed[best] - v) ? i : best, 0);
+                        };
+                        const tick = valueToTick(shortTermBudget);
+                        return (
+                            <div className="menu-item memory-slider-item">
+                                <div className="memory-slider-header">
+                                    <ChatInfoIcon icon={MessageSquare} color={BINDING_ACCENTS.voice} />
+                                    <div className="menu-label-group">
+                                        <span className="menu-label">短期记忆+最近上下文</span>
+                                        <span className="menu-desc">聊天历史、朋友圈、群聊与跨应用近期事件截断量（所有角色共用）</span>
+                                    </div>
+                                    <span className="ui-slider-value memory-slider-current">{tickToValue(tick)}</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={maxTick}
+                                    step={1}
+                                    value={tick}
+                                    onChange={e => {
+                                        const next = tickToValue(Math.round(Number(e.target.value)));
+                                        setShortTermBudget(next);
+                                        saveMemoryConfig({ ...loadMemoryConfig(), shortTermTokenBudget: next });
+                                    }}
+                                    className="ui-slider memory-settings-slider"
+                                    aria-label="短期记忆+最近上下文"
+                                />
+                            </div>
+                        );
+                    })()}
+                </div>
 
                 {/* Toggles */}
                 <div className="menu-group">
