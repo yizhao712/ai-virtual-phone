@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback, useContext } from "react";
-import { Plus, RefreshCw, Rss, AlertCircle, FileEdit, Trash2, X, Check, Copy, GripVertical } from "lucide-react";
+import { Plus, RefreshCw, Rss, AlertCircle, FileEdit, Trash2, X, Check, Copy, GripVertical, ChevronDown } from "lucide-react";
+import { loadApiGroups, saveApiGroups, API_GROUPS_UPDATED_EVENT, type ApiGroup } from "@/lib/api-groups";
 import { SettingsContext } from "../phone-settings-app";
 import type { ApiConfig } from "@/lib/settings-types";
 import { loadApiConfigs, removeApiConfigReferences, saveApiConfigs } from "@/lib/settings-storage";
@@ -41,6 +42,41 @@ export function ApiSettings() {
     const [drag, setDrag] = useState<{ id: string; startY: number; offset: number; rowH: number } | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
 
+    // ── API 分组 ──
+    const [groups, setGroups] = useState<ApiGroup[]>([]);
+    const [selectMode, setSelectMode] = useState(false);
+    const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [nameDialog, setNameDialog] = useState<null | { mode: "create" } | { mode: "rename"; id: string }>(null);
+    const [nameDraft, setNameDraft] = useState("");
+    const persistGroups = (next: ApiGroup[]) => {
+        const cleaned = next.filter(g => g.apiIds.length > 0);
+        setGroups(cleaned);
+        saveApiGroups(cleaned);
+    };
+    useEffect(() => {
+        const sync = () => setGroups(loadApiGroups());
+        window.addEventListener(API_GROUPS_UPDATED_EVENT, sync);
+        return () => window.removeEventListener(API_GROUPS_UPDATED_EVENT, sync);
+    }, []);
+    const toggleSelect = (id: string) => setSelectedIds(prev => {
+        const next = new Set(prev);
+        if (next.has(id)) next.delete(id); else next.add(id);
+        return next;
+    });
+    const exitSelectMode = () => { setSelectMode(false); setSelectedIds(new Set()); };
+    const createGroup = (name: string) => {
+        const ids = configs.filter(c => selectedIds.has(c.id)).map(c => c.id);
+        if (ids.length === 0) return;
+        const stripped = groups.map(g => ({ ...g, apiIds: g.apiIds.filter(id => !selectedIds.has(id)) }));
+        persistGroups([...stripped, { id: `apigrp-${Date.now()}`, name: name.trim() || "新分组", apiIds: ids, collapsed: false }]);
+        exitSelectMode();
+    };
+    const removeSelectedFromGroups = () => {
+        persistGroups(groups.map(g => ({ ...g, apiIds: g.apiIds.filter(id => !selectedIds.has(id)) })));
+        exitSelectMode();
+    };
+    const toggleGroupCollapsed = (gid: string) => persistGroups(groups.map(g => g.id === gid ? { ...g, collapsed: !g.collapsed } : g));
+
     // Testing and Fetching states
     const [isFetching, setIsFetching] = useState<Record<string, boolean>>({});
     const [fetchedModels, setFetchedModels] = useState<Record<string, string[]>>({});
@@ -57,6 +93,7 @@ export function ApiSettings() {
             saveApiConfigs(DEFAULT_CONFIGS);
         }
         setIsLoaded(true);
+        setGroups(loadApiGroups());
     }, []);
 
     const persist = useCallback((newConfigs: ApiConfig[]) => {
@@ -101,6 +138,7 @@ export function ApiSettings() {
     const removeConfig = (id: string) => {
         persist(configs.filter(c => c.id !== id));
         removeApiConfigReferences(id);
+        persistGroups(groups.map(g => ({ ...g, apiIds: g.apiIds.filter(x => x !== id) })));
         const newFetchedModels = { ...fetchedModels };
         delete newFetchedModels[id];
         setFetchedModels(newFetchedModels);
@@ -235,12 +273,33 @@ export function ApiSettings() {
         }
     };
 
+    // 渲染顺序：先各分组（折叠则只显示标题），再未分组的 API
+    type ApiRenderItem = { type: "group"; group: ApiGroup; count: number } | { type: "api"; config: ApiConfig };
+    const renderItems: ApiRenderItem[] = [];
+    const groupedIds = new Set(groups.flatMap(g => g.apiIds));
+    for (const g of groups) {
+        const members = g.apiIds.map(id => configs.find(c => c.id === id)).filter((c): c is ApiConfig => !!c);
+        if (members.length === 0) continue;
+        renderItems.push({ type: "group", group: g, count: members.length });
+        if (!g.collapsed) members.forEach(c => renderItems.push({ type: "api", config: c }));
+    }
+    configs.filter(c => !groupedIds.has(c.id)).forEach(c => renderItems.push({ type: "api", config: c }));
+
     if (!isLoaded) return null;
 
     return (
         <div className="flex flex-col gap-6">
             <div className="flex items-center">
                 <h2 className="m-0 mx-2 ts-28 font-bold italic leading-none text-black">API Settings</h2>
+                {configs.length > 1 && (
+                    <button
+                        type="button"
+                        className="ml-auto inline-flex h-8 items-center rounded-full border border-black/10 bg-white px-3 text-xs font-bold text-gray-800 shadow-sm active:scale-95"
+                        onClick={() => (selectMode ? exitSelectMode() : setSelectMode(true))}
+                    >
+                        {selectMode ? "完成" : "多选分组"}
+                    </button>
+                )}
             </div>
 
             {configs.length === 0 ? (
@@ -258,7 +317,23 @@ export function ApiSettings() {
                 </div>
             ) : (
                 <div className="flex flex-col gap-2">
-                    {configs.map(config => (
+                    {renderItems.map(item => item.type === "group" ? (() => {
+                        const g = (item as { type: "group"; group: ApiGroup; count: number }).group;
+                        const count = (item as { type: "group"; group: ApiGroup; count: number }).count;
+                        return (
+                            <div
+                                key={`grp-${g.id}`}
+                                className="flex items-center gap-2 px-2 py-1 cursor-pointer select-none"
+                                onClick={() => toggleGroupCollapsed(g.id)}
+                            >
+                                <ChevronDown size={16} style={{ transform: g.collapsed ? "rotate(-90deg)" : "none", transition: "transform 0.15s" }} />
+                                <span className="menu-label font-semibold flex-1 truncate">{g.name}</span>
+                                <span className="menu-desc !mt-0">{count}</span>
+                                <button type="button" className="ui-link-btn" onClick={(e) => { e.stopPropagation(); setNameDraft(g.name); setNameDialog({ mode: "rename", id: g.id }); }}>重命名</button>
+                                <button type="button" className="ui-link-btn" onClick={(e) => { e.stopPropagation(); persistGroups(groups.filter(x => x.id !== g.id)); }}>解散</button>
+                            </div>
+                        );
+                    })() : (() => { const config = (item as { type: "api"; config: ApiConfig }).config; return (
                         <div
                             key={config.id}
                             className="ui-config-card min-w-0 cursor-pointer"
@@ -284,7 +359,7 @@ export function ApiSettings() {
                             role="button"
                             tabIndex={0}
                             aria-label={`编辑 ${config.name || config.provider}`}
-                            onClick={() => setEditingId(config.id)}
+                            onClick={() => (selectMode ? toggleSelect(config.id) : setEditingId(config.id))}
                             onKeyDown={(event) => {
                                 if (event.target !== event.currentTarget) return;
                                 if (event.key === "Enter" || event.key === " ") {
@@ -293,6 +368,9 @@ export function ApiSettings() {
                                 }
                             }}
                         >
+                            {selectMode && (
+                                <input type="checkbox" checked={selectedIds.has(config.id)} readOnly aria-label="选择" />
+                            )}
                             <div className="min-w-0 flex-1 flex flex-col gap-0.5">
                                 <span className="truncate text-[calc(14px*var(--app-text-scale,1))] font-bold leading-tight text-[var(--c-text-title)]">{config.name || config.provider}</span>
                                 <span className="menu-desc truncate !mt-0">{config.defaultModel || config.provider || "未设置模型"}</span>
@@ -364,7 +442,37 @@ export function ApiSettings() {
                                 </span>
                             </div>
                         </div>
-                    ))}
+                    ); })())}
+                </div>
+            )}
+
+            {selectMode && (
+                <div className="sticky bottom-2 z-10 flex items-center gap-2 rounded-2xl border border-black/10 bg-white p-2 shadow-md">
+                    <span className="menu-desc !mt-0 flex-1">已选 {selectedIds.size} 个</span>
+                    <button type="button" className="ui-btn ui-btn-primary" disabled={selectedIds.size === 0} onClick={() => { setNameDraft(""); setNameDialog({ mode: "create" }); }}>建组</button>
+                    <button type="button" className="ui-btn ui-btn-outline" disabled={selectedIds.size === 0} onClick={removeSelectedFromGroups}>移出分组</button>
+                    <button type="button" className="ui-btn ui-btn-ghost" onClick={exitSelectMode}>取消</button>
+                </div>
+            )}
+
+            {nameDialog && (
+                <div className="modal-overlay" onClick={() => setNameDialog(null)}>
+                    <div className="modal-dialog" onClick={e => e.stopPropagation()}>
+                        <div className="ts-17 font-semibold text-center text-[var(--c-text)]">{nameDialog.mode === "create" ? "新建分组" : "重命名分组"}</div>
+                        <Input type="text" value={nameDraft} onChange={e => setNameDraft(e.target.value)} placeholder="分组名称" />
+                        <div className="flex gap-3 w-full">
+                            <button className="ui-btn ui-btn-ghost flex-1" onClick={() => setNameDialog(null)}>取消</button>
+                            <button
+                                className="ui-btn ui-btn-success flex-1"
+                                onClick={() => {
+                                    const dialog = nameDialog;
+                                    setNameDialog(null);
+                                    if (dialog.mode === "create") createGroup(nameDraft);
+                                    else persistGroups(groups.map(g => g.id === dialog.id ? { ...g, name: nameDraft.trim() || g.name } : g));
+                                }}
+                            >保存</button>
+                        </div>
+                    </div>
                 </div>
             )}
 

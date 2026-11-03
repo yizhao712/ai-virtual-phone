@@ -21,6 +21,7 @@ import {
     type WorldBookEntryOverrides,
 } from "@/lib/worldbook-entry-overrides";
 import { loadCharacters } from "@/lib/character-storage";
+import { loadApiGroups, saveApiGroups, API_GROUPS_UPDATED_EVENT, type ApiGroup } from "@/lib/api-groups";
 import type { Character } from "@/lib/character-types";
 
 type QuickScope = "global" | "character";
@@ -76,6 +77,12 @@ export function QuickActionFloat() {
     const [selectedCharId, setSelectedCharId] = useState("");
     const [config, setConfig] = useState<BindingConfig>(EMPTY_BINDING_CONFIG);
     const [apiConfigs, setApiConfigs] = useState<ApiConfig[]>([]);
+    const [apiGroups, setApiGroups] = useState<ApiGroup[]>([]);
+    const toggleApiGroupCollapsed = useCallback((groupId: string) => {
+        const next = loadApiGroups().map(g => g.id === groupId ? { ...g, collapsed: !g.collapsed } : g);
+        setApiGroups(next);
+        saveApiGroups(next);
+    }, []);
     const [worldBooks, setWorldBooks] = useState<WorldBookConfig[]>([]);
     const [expandedWorldBookId, setExpandedWorldBookId] = useState<string | null>(null);
     // 条目的按角色开关（角色页签下使用）
@@ -112,6 +119,7 @@ export function QuickActionFloat() {
         const nextCharacters = loadCharacters();
         setConfig(loadBindingConfig());
         setApiConfigs(loadApiConfigs());
+        setApiGroups(loadApiGroups());
         setWorldBooks(loadWorldBooks());
         setEntryOverrides(loadWorldBookEntryOverrides());
         setCharacters(nextCharacters);
@@ -145,9 +153,11 @@ export function QuickActionFloat() {
         const handleBindingsUpdated = () => reloadData();
         const handleFocus = () => reloadData();
         window.addEventListener("settings-bindings-updated", handleBindingsUpdated);
+        window.addEventListener(API_GROUPS_UPDATED_EVENT, handleBindingsUpdated);
         window.addEventListener("focus", handleFocus);
         return () => {
             window.removeEventListener("settings-bindings-updated", handleBindingsUpdated);
+            window.removeEventListener(API_GROUPS_UPDATED_EVENT, handleBindingsUpdated);
             window.removeEventListener("focus", handleFocus);
         };
     }, [enabled, reloadData]);
@@ -399,6 +409,17 @@ export function QuickActionFloat() {
         : inheritedWorldBookNames.length > 0
             ? `继承全局：${inheritedWorldBookNames.join("、")}`
             : "继承全局";
+    // API 渲染顺序：先各分组（折叠只显示标题），再未分组的
+    type ApiRenderItem = { api?: ApiConfig; group?: ApiGroup; count?: number };
+    const apiRenderItems: ApiRenderItem[] = [];
+    const groupedApiIds = new Set(apiGroups.flatMap(g => g.apiIds));
+    for (const g of apiGroups) {
+        const members = g.apiIds.map(id => apiConfigs.find(a => a.id === id)).filter((a): a is ApiConfig => !!a);
+        if (members.length === 0) continue;
+        apiRenderItems.push({ group: g, count: members.length });
+        if (!g.collapsed) members.forEach(a => apiRenderItems.push({ api: a }));
+    }
+    apiConfigs.filter(a => !groupedApiIds.has(a.id)).forEach(a => apiRenderItems.push({ api: a }));
     const expandedWorldBook = worldBooks.find(book => book.id === expandedWorldBookId) || null;
     const expandedEntries = expandedWorldBook?.entries ?? [];
     const popoverStyle: CSSProperties | undefined = popoverPosition
@@ -511,7 +532,16 @@ export function QuickActionFloat() {
                                 </button>
                                 {apiConfigs.length === 0 ? (
                                     <div className="quick-action-empty">暂无 API 配置</div>
-                                ) : apiConfigs.map(api => (
+                                ) : apiRenderItems.map(({ api, group, count }) => group ? (
+                                    <button
+                                        type="button"
+                                        key={`grp-${group.id}`}
+                                        className="quick-action-option"
+                                        onClick={() => toggleApiGroupCollapsed(group.id)}
+                                    >
+                                        <span>{group.collapsed ? "▸" : "▾"} {group.name}（{count}）</span>
+                                    </button>
+                                ) : api ? (
                                     <button
                                         type="button"
                                         key={api.id}
@@ -523,7 +553,7 @@ export function QuickActionFloat() {
                                         <span>{api.name || api.defaultModel || api.provider}</span>
                                         {currentSlot.apiConfigId === api.id ? <Check size={15} /> : null}
                                     </button>
-                                ))}
+                                ) : null)}
                             </div>
                             ) : null}
                         </section>
