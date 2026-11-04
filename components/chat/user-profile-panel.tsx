@@ -924,6 +924,22 @@ function InlineMomentsSettings({ onBack }: { onBack: () => void }) {
         <PageShell title="朋友圈互动设置" onBack={onBack} className="absolute inset-0 z-[100]">
             <div className="page-menu profile-settings-menu">
                 <div className="menu-group">
+                    <div className="menu-item">
+                        <ProfileSettingsIcon icon={Radio} color={CONTENT_APP_ACCENTS.moments} />
+                        <div className="menu-label-group">
+                            <span className="menu-label">角色自动发朋友圈</span>
+                            <span className="menu-desc">{config.autoPostAllDisabled ? "已一键关闭：所有角色都不会自动发帖（评论、点赞、手动立即发帖不受影响）" : "开启中：好友角色按间隔自动发帖"}</span>
+                        </div>
+                        <div className="menu-right">
+                            <Toggle
+                                checked={!config.autoPostAllDisabled}
+                                onChange={checked => update({ autoPostAllDisabled: !checked })}
+                            />
+                        </div>
+                    </div>
+                </div>
+
+                <div className="menu-group">
                     <ProfileSettingsSliderItem
                         icon={Radio}
                         color={CONTENT_APP_ACCENTS.moments}

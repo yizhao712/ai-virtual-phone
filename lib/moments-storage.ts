@@ -354,6 +354,8 @@ export type MomentsInteractionConfig = {
     bilingualTranslationPrompt: string;
     // 禁止自动发帖的角色（只关调度发帖；评论/点赞/手动立即发帖不受影响）
     autoPostDisabledCharacterIds: string[];
+    // 一键总开关：true=所有角色都不再自动发帖（评论/点赞/手动立即发帖不受影响）
+    autoPostAllDisabled: boolean;
 };
 
 export const DEFAULT_MOMENTS_CONFIG: MomentsInteractionConfig = {
@@ -369,6 +371,7 @@ export const DEFAULT_MOMENTS_CONFIG: MomentsInteractionConfig = {
     collapseBilingualTranslation: true,
     bilingualTranslationPrompt: DEFAULT_MOMENTS_BILINGUAL_PROMPT,
     autoPostDisabledCharacterIds: [],
+    autoPostAllDisabled: false,
 };
 
 export function loadMomentsConfig(): MomentsInteractionConfig {
