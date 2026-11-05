@@ -1,6 +1,6 @@
 "use client";
 
-import { Component, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
+import { Component, Fragment, useState, useEffect, useCallback, type CSSProperties, type ReactNode } from "react";
 import { Trash2, Zap, Clock, Users, Archive, AlertCircle, Search, Brain, FileText, MoreHorizontal, Plus, Edit3, X, Check, ChevronRight, Filter, Eye, EyeOff, Sparkles, RotateCcw, CalendarDays, GripVertical, type LucideIcon } from "lucide-react";
 import { simpleLLMCall } from "@/lib/api-helpers";
 import { kvGet, kvSet, kvRemove } from "@/lib/kv-db";
@@ -106,6 +106,8 @@ type MemoryEditorState = {
     type: MemoryEntry["type"];
     entry?: MemoryEntry;
     content: string;
+    /** 新增长期记忆时指定的归属日期（YYYY-MM-DD） */
+    memoryDate?: string;
 };
 
 const memorySettingsIconStyle = (color: string): CSSProperties => ({
@@ -240,6 +242,36 @@ function sortMemoriesByDateDesc(entries: MemoryEntry[]): MemoryEntry[] {
     });
 }
 
+/** 按 YYYY-MM 分组，保持传入顺序（调用前已按日期倒序） */
+function groupMemoriesByMonth(entries: MemoryEntry[]): Array<[string, MemoryEntry[]]> {
+    const map = new Map<string, MemoryEntry[]>();
+    for (const entry of entries) {
+        const month = getMemoryDisplayDate(entry).slice(0, 7) || "未知";
+        const bucket = map.get(month);
+        if (bucket) bucket.push(entry);
+        else map.set(month, [entry]);
+    }
+    return Array.from(map.entries());
+}
+
+/** 在指定月份新增记忆时的默认日期：当前月取今天，其他月取月末 */
+function defaultDateForMonth(month: string): string {
+    const today = toLocalDateString(new Date().toISOString());
+    if (today.startsWith(month)) return today;
+    const [y, m] = month.split("-").map(Number);
+    if (!y || !m) return today;
+    const last = new Date(y, m, 0).getDate();
+    return `${month}-${String(last).padStart(2, "0")}`;
+}
+
+/** 自动总结产生、尚未被提炼的长期记忆 */
+function isPendingRefine(entry: MemoryEntry): boolean {
+    return !isMemoryHidden(entry)
+        && typeof entry.metadata?.summarizedEvents === "number"
+        && !Array.isArray(entry.metadata?.refinedFrom)
+        && entry.metadata?.editedByUser !== true;
+}
+
 type CharacterMemoryInfo = {
     character: Character;
     longTermCount: number;
@@ -284,6 +316,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     const [memDrag, setMemDrag] = useState<{ id: string; startY: number; offset: number } | null>(null);
     const [orderRevision, setOrderRevision] = useState(0);
     const [backfillProgress, setBackfillProgress] = useState<{ done: number; total: number } | null>(null);
+    const [longView, setLongView] = useState<"pinned" | "vector">("pinned");
+    // 月份折叠状态，键为「分组:月份」；缺省时固定线展开、向量库折叠
+    const [monthOpenMap, setMonthOpenMap] = useState<Record<string, boolean>>({});
 
     const disabledSourceCount = MEMORY_SOURCE_OPTIONS
         .filter(source => (config.shortTermAllowedSources ?? {})[source.key] === false).length;
@@ -380,6 +415,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
     useEffect(() => {
         if (view === "detail" && selectedCharId) {
             setActiveTab("short");
+            setLongView("pinned");
             setExpandedId(null);
             setSelectedLongTermIds([]);
             setRefineDraft(null);
@@ -592,9 +628,13 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         }
     };
 
-    const openCreateMemoryEditor = (type: MemoryEntry["type"]) => {
+    const openCreateMemoryEditor = (type: MemoryEntry["type"], memoryDate?: string) => {
         setEntryMenuId(null);
-        setMemoryEditor({ type, content: "" });
+        setMemoryEditor({
+            type,
+            content: "",
+            memoryDate: type === "long_term" ? (memoryDate ?? toLocalDateString(new Date().toISOString())) : undefined,
+        });
     };
 
     const openEditMemoryEditor = (entry: MemoryEntry) => {
@@ -647,6 +687,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     updatedAt: now,
                     metadata: {
                         origin: "user_manual",
+                        ...(type === "long_term" && memoryEditor.memoryDate && MEMORY_DATE_PATTERN.test(memoryEditor.memoryDate)
+                            ? { memoryDate: memoryEditor.memoryDate }
+                            : {}),
                     },
                 };
 
@@ -658,6 +701,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             }
             setMemoryEditor(null);
             setExpandedId(entry.id);
+            if (type === "long_term") setLongView("pinned");
             loadCharacterList();
             showNotice(type === "core" ? "核心记忆已保存" : "长期记忆已保存");
         } catch (error) {
@@ -906,8 +950,15 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         const isLong = type === "long_term";
         const baseList = isLong ? sortMemoriesByDateDesc(entries) : entries;
         // orderRevision 变化时重新读取手动顺序
-        const manualOrder = orderRevision >= 0 && selectedCharId ? loadManualOrder(selectedCharId, type) : null;
-        const list = manualOrder ? applyManualOrder(baseList, manualOrder) : baseList;
+        // 长期记忆按月份+日期排，不使用手动顺序
+        const manualOrder = !isLong && orderRevision >= 0 && selectedCharId ? loadManualOrder(selectedCharId, type) : null;
+        const orderedList = manualOrder ? applyManualOrder(baseList, manualOrder) : baseList;
+        const list = isLong
+            ? orderedList.filter(item => (longView === "vector") === isMemoryHidden(item))
+            : orderedList;
+        const monthGroups = isLong ? groupMemoriesByMonth(list) : [];
+        const isMonthOpen = (month: string) => monthOpenMap[`${longView}:${month}`] ?? longView === "pinned";
+        const toggleMonth = (month: string) => setMonthOpenMap(prev => ({ ...prev, [`${longView}:${month}`]: !isMonthOpen(month) }));
         const finishMemoryDrag = (draggedId: string, clientY: number) => {
             const others = Array.from(document.querySelectorAll<HTMLElement>("[data-mem-card]"))
                 .filter(el => el.dataset.memCard !== draggedId);
@@ -922,6 +973,34 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         };
         return (
             <>
+                {isLong && entries.length > 0 && (
+                    <div className="mem-entry-toolbar" role="tablist" aria-label="长期记忆分组">
+                        {([
+                            { key: "pinned" as const, label: "固定线" },
+                            { key: "vector" as const, label: "向量库" },
+                        ]).map(option => (
+                            <button
+                                key={option.key}
+                                role="tab"
+                                aria-selected={longView === option.key}
+                                className="mem-entry-add-btn"
+                                style={{ opacity: longView === option.key ? 1 : 0.55, fontWeight: longView === option.key ? 600 : 400 }}
+                                onClick={() => {
+                                    setLongView(option.key);
+                                    setSelectedLongTermIds([]);
+                                    setEntryMenuId(null);
+                                }}
+                            >
+                                <span>{option.label}</span>
+                            </button>
+                        ))}
+                    </div>
+                )}
+                {isLong && entries.length > 0 && list.length === 0 && (
+                    <p className="text-center ts-12 text-secondary">
+                        {longView === "pinned" ? "固定线里还没有记忆" : "向量库还是空的"}
+                    </p>
+                )}
                 {entries.length > 0 && (
                     <div className="mem-entry-toolbar">
                         <button
@@ -950,7 +1029,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 <span>{isLong ? "按日期重排" : "恢复默认顺序"}</span>
                             </button>
                         )}
-                        {isLong && missingEmbeddingCount > 0 && (
+                        {isLong && longView === "vector" && missingEmbeddingCount > 0 && (
                             <button
                                 className="mem-entry-add-btn"
                                 disabled={!!backfillProgress}
@@ -1037,7 +1116,56 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                         </button>
                     </div>
                 ) : (
-                    list.map(entry => (
+                    (isLong ? monthGroups : ([["", list]] as Array<[string, MemoryEntry[]]>)).map(([month, group]) => (
+                    <Fragment key={month || "all"}>
+                    {isLong && (
+                        <div className="mem-entry-toolbar" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                            <button
+                                className="mem-entry-menu-btn"
+                                aria-expanded={isMonthOpen(month)}
+                                onClick={() => toggleMonth(month)}
+                                style={{ display: "flex", alignItems: "center", gap: 6 }}
+                            >
+                                <ChevronRight size={14} style={{ transform: isMonthOpen(month) ? "rotate(90deg)" : undefined }} />
+                                <span className="ts-12">
+                                    {month} · {group.length} 条
+                                    {longView === "vector" && group.some(item => !hasEmbedding(item))
+                                        ? ` · 无向量 ${group.filter(item => !hasEmbedding(item)).length}`
+                                        : ""}
+                                </span>
+                            </button>
+                            {longView === "pinned" && (
+                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                    {group.some(isPendingRefine) && (
+                                        <button
+                                            className="mem-entry-menu-btn ts-11"
+                                            onClick={() => {
+                                                const pendingIds = group.filter(isPendingRefine).map(item => item.id);
+                                                setSelectedLongTermIds(prev => {
+                                                    const allPicked = pendingIds.every(id => prev.includes(id));
+                                                    return allPicked
+                                                        ? prev.filter(id => !pendingIds.includes(id))
+                                                        : Array.from(new Set([...prev, ...pendingIds]));
+                                                }
+                                                );
+                                            }}
+                                        >
+                                            选择本月待提炼
+                                        </button>
+                                    )}
+                                    <button
+                                        className="mem-entry-menu-btn"
+                                        aria-label={`在 ${month} 新增固定记忆`}
+                                        title="在这个月新增固定记忆"
+                                        onClick={() => openCreateMemoryEditor("long_term", defaultDateForMonth(month))}
+                                    >
+                                        <Plus size={16} />
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    {(isLong && !isMonthOpen(month) ? [] : group).map(entry => (
                         <div
                             key={entry.id}
                             className={`g-card memory-report-card${entryMenuId === entry.id ? " is-menu-open" : ""}`}
@@ -1098,12 +1226,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                     {isLong && isMemoryHidden(entry) && (
                                         <span className="mem-origin-badge">HIDDEN</span>
                                     )}
+                                    {isLong && isPendingRefine(entry) && (
+                                        <span className="mem-origin-badge" title="自动总结产生，还没有提炼">待提炼</span>
+                                    )}
                                     {isLong && !hasEmbedding(entry) && (
                                         <span className="mem-origin-badge" title="没有向量，向量检索搜不到这条">无向量</span>
                                     )}
                                     <span className={`mem-origin-badge ${isManualMemoryEntry(entry) ? "is-manual" : ""}`}>
                                         {isManualMemoryEntry(entry) ? "MANUAL" : "AUTO"}
                                     </span>
+                                    {!isLong && (
                                     <span
                                         role="button"
                                         aria-label="按住拖动排序"
@@ -1144,6 +1276,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                     >
                                         <GripVertical size={16} />
                                     </span>
+                                    )}
                                     <div className="mem-entry-menu-wrap">
                                         <button
                                             className="mem-entry-menu-btn"
@@ -1203,6 +1336,8 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                 }
                             </div>
                         </div>
+                    ))}
+                    </Fragment>
                     ))
                 )}
             </>
@@ -1303,6 +1438,17 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                     </button>
                                 </div>
                                 <div className="modal-body mem-edit-body" data-ui="modal-body">
+                                    {memoryEditor.type === "long_term" && !memoryEditor.entry && (
+                                        <label className="ts-12 text-secondary" style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                                            <span>归属日期</span>
+                                            <input
+                                                type="date"
+                                                value={memoryEditor.memoryDate ?? ""}
+                                                disabled={savingMemory}
+                                                onChange={event => setMemoryEditor(prev => prev ? { ...prev, memoryDate: event.target.value } : prev)}
+                                            />
+                                        </label>
+                                    )}
                                     <textarea
                                         className="ui-textarea mem-edit-textarea"
                                         value={memoryEditor.content}
