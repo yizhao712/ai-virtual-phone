@@ -774,16 +774,16 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         setLongTermEntries(prev => prev.map(item => item.id === entry.id ? entry : item));
     };
 
-    const handleToggleHidden = async (entry: MemoryEntry) => {
+    const handleToggleHidden = async (entry: MemoryEntry, mode: "hide" | "unhide" | "vector" | "pinned") => {
         setEntryMenuId(null);
-        const hidden = !isMemoryHidden(entry);
+        const hidden = mode === "hide" || mode === "vector";
         try {
             await updateLongTermEntry({
                 ...entry,
                 updatedAt: new Date().toISOString(),
-                metadata: { ...(entry.metadata ?? {}), hidden },
+                metadata: { ...(entry.metadata ?? {}), hidden, pinnedDisplay: mode === "hide" },
             });
-            showNotice(hidden ? "已转移至向量库：不再固定注入、不参与总结，聊到相关话题时仍可被向量召回" : "已转移至固定线");
+            showNotice(mode === "hide" ? "已隐藏：仍显示在固定线，但不再固定注入、不参与总结，聊到相关话题时仍可被向量召回" : mode === "vector" ? "已转移至向量库" : mode === "pinned" ? "已转移至固定线" : "已取消隐藏");
         } catch (error) {
             showNotice("操作失败: " + String(error));
         }
@@ -958,7 +958,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         const manualOrder = !isLong && orderRevision >= 0 && selectedCharId ? loadManualOrder(selectedCharId, type) : null;
         const orderedList = manualOrder ? applyManualOrder(baseList, manualOrder) : baseList;
         const list = isLong
-            ? orderedList.filter(item => (longView === "vector") === isMemoryHidden(item))
+            ? orderedList.filter(item => (longView === "vector") === (isMemoryHidden(item) && item.metadata?.pinnedDisplay !== true))
             : orderedList;
         const monthGroups = isLong ? groupMemoriesByMonth(list) : [];
         const isMonthOpen = (month: string) => monthOpenMap[`${longView}:${month}`] ?? longView === "pinned";
@@ -1300,9 +1300,15 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                                 </button>
                                                 {isLong && (
                                                     <>
-                                                        <button onClick={() => void handleToggleHidden(entry)}>
+                                                        {(!isMemoryHidden(entry) || entry.metadata?.pinnedDisplay === true) && (
+                                                            <button onClick={() => void handleToggleHidden(entry, entry.metadata?.pinnedDisplay === true ? "unhide" : "hide")}>
+                                                                {entry.metadata?.pinnedDisplay === true ? <Eye size={13} /> : <EyeOff size={13} />}
+                                                                <span>{entry.metadata?.pinnedDisplay === true ? "取消隐藏" : "隐藏"}</span>
+                                                            </button>
+                                                        )}
+                                                        <button onClick={() => void handleToggleHidden(entry, (!isMemoryHidden(entry) || entry.metadata?.pinnedDisplay === true) ? "vector" : "pinned")}>
                                                             {isMemoryHidden(entry) ? <Eye size={13} /> : <EyeOff size={13} />}
-                                                            <span>{isMemoryHidden(entry) ? "转移至固定线" : "转移至向量库"}</span>
+                                                            <span>{(!isMemoryHidden(entry) || entry.metadata?.pinnedDisplay === true) ? "转移至向量库" : "转移至固定线"}</span>
                                                         </button>
                                                         <button onClick={() => openDateEditor(entry)}>
                                                             <CalendarDays size={13} />
