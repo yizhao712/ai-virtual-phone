@@ -8,7 +8,8 @@ import { parseAIResponse } from "@/lib/rich-message-parser";
 import { resolveUserIdentity } from "@/lib/settings-storage";
 import { cancelFollowUp } from "@/lib/follow-up-service";
 import { createSTTSession, type STTSession } from "@/lib/stt-service";
-import { resolveVoiceConfig, synthesizeSpeech, playAudioBlob, playAudioBlobViaMediaElement, setCallAudioSessionActive } from "@/lib/tts-service";
+import { resolveVoiceConfig, playAudioBlob, playAudioBlobViaMediaElement, setCallAudioSessionActive } from "@/lib/tts-service";
+import { playSpeechStream } from "@/lib/tts-stream";
 import { isCallRecordingSupported, resolveCloudSttConfig } from "@/lib/stt-cloud";
 import { useHoldToTalk } from "./use-hold-to-talk";
 import { suspendKeepAliveForCall, resumeKeepAliveAfterCall } from "@/lib/use-weixin-bridge";
@@ -276,14 +277,11 @@ export function GroupCallScreen({ type, session, characters, onEnd, initiator = 
                 const voiceConfig = resolveVoiceConfig(r.characterId);
                 if (voiceConfig && speechText.trim()) {
                     try {
-                        const audioBlob = await synthesizeSpeech(speechText, voiceConfig);
-                        if (stateRef.current === "ENDED") return;
-                        if (audioBlob) {
-                            const { promise, abort } = playCallAudio(audioBlob);
-                            audioAbortRef.current = abort;
-                            await promise;
-                            audioAbortRef.current = null;
-                        }
+                        // 群聊里每个人用自己的 voice 配置，同样逐句合成 + 边合成边播
+                        const stream = playSpeechStream(speechText, voiceConfig, playCallAudio);
+                        audioAbortRef.current = stream.abort;
+                        await stream.promise;
+                        audioAbortRef.current = null;
                     } catch (e) {
                         console.warn("[GroupCall] TTS failed:", e);
                     }
