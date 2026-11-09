@@ -37,6 +37,8 @@ import { CustomAppForegroundBoundary } from "@/components/app-market/custom-app-
 
 import { ChatSettingsPanel } from "./chat-settings-panel";
 import { VoiceCallScreen } from "./voice-call-screen";
+import { VoiceCallModePicker } from "./voice-call-mode-picker";
+import { setPendingCallMode } from "@/lib/voice-call-settings";
 import { GLOBAL_CALL_ENDED_EVENT, startGlobalCall } from "./global-call-host";
 import { VideoCallScreen } from "./video-call-screen";
 import { GroupCallScreen } from "./group-call-screen";
@@ -1126,6 +1128,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
     const [activeCustomChatPlus, setActiveCustomChatPlus] = useState<ActiveCustomChatPlus | null>(null);
     const [showSettings, setShowSettings] = useState(false);
     const [showVoiceCall, setShowVoiceCall] = useState(false);
+    const [showCallModePicker, setShowCallModePicker] = useState(false);
     const [showVideoCall, setShowVideoCall] = useState(false);
     const [callInitiator, setCallInitiator] = useState<"user" | "character">("user");
     const [callInitiatorName, setCallInitiatorName] = useState<string>("");
@@ -6330,7 +6333,7 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
 	                onOpenRichModal={(modal) => { setShowPlusMenu(false); setRichModal(modal); }}
                 onOpenCustomPlusAction={handleOpenCustomPlusAction}
                 onStartVideoCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); setCallInitiator("user"); setShowVideoCall(true); }}
-                onStartVoiceCall={() => { cancelFollowUp(session.id); setShowPlusMenu(false); setCallInitiator("user"); setShowVoiceCall(true); }}
+                onStartVoiceCall={() => { setShowPlusMenu(false); setShowCallModePicker(true); }}
                 onSendText={handleSendText}
                 onStopGeneration={clearStuckGeneration}
                 onTriggerAIResponse={triggerAIResponse}
@@ -6457,6 +6460,19 @@ export function ChatRoom({ session, onBack, onDeleted }: ChatRoomProps) {
                         </div>
                     </div>
                 </div>
+            )}
+
+            {showCallModePicker && (
+                <VoiceCallModePicker
+                    onClose={() => setShowCallModePicker(false)}
+                    onPick={(mode) => {
+                        setPendingCallMode(mode);
+                        setShowCallModePicker(false);
+                        cancelFollowUp(session.id);
+                        setCallInitiator("user");
+                        setShowVoiceCall(true);
+                    }}
+                />
             )}
 
             {/* Rich Media Input Modals */}

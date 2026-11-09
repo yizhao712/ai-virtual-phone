@@ -12,6 +12,12 @@ import { cancelFollowUp } from "@/lib/follow-up-service";
 import { createSTTSession, type STTSession } from "@/lib/stt-service";
 import { resolveVoiceConfig, playAudioBlob, playAudioBlobViaMediaElement, setCallAudioSessionActive } from "@/lib/tts-service";
 import { playSpeechStream } from "@/lib/tts-stream";
+import { loadVoiceConfigs } from "@/lib/settings-storage";
+import { saveChatImageToIndexedDB, getChatImageFromIndexedDB } from "@/lib/chat-asset-storage";
+import {
+    CALL_MODE_LABELS, CALL_THEMES, clearPendingCallMode, loadVoiceCallSettings, peekPendingCallMode, saveVoiceCallSettings,
+    type CallMode, type CallTheme, type VoiceCallSettings,
+} from "@/lib/voice-call-settings";
 import { isCallRecordingSupported, resolveCloudSttConfig } from "@/lib/stt-cloud";
 import { useHoldToTalk } from "./use-hold-to-talk";
 import { suspendKeepAliveForCall, resumeKeepAliveAfterCall } from "@/lib/use-weixin-bridge";
@@ -81,6 +87,43 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
     const [typedText, setTypedText] = useState("");
     const [bgImageResolved, setBgImageResolved] = useState<string | null>(null);
     const [showSttWarning, setShowSttWarning] = useState(false);
+
+    // ── 通话模式 / 主题 / 背景 / 各模式音色 ──
+    const callModeRef = useRef<CallMode>(peekPendingCallMode());
+    useEffect(() => { clearPendingCallMode(); }, []);
+    const [callSettings, setCallSettings] = useState<VoiceCallSettings>(() => loadVoiceCallSettings());
+    const callSettingsRef = useRef(callSettings);
+    callSettingsRef.current = callSettings;
+    const [menuOpen, setMenuOpen] = useState(false);
+    const [customBg, setCustomBg] = useState<string | null>(null);
+    const updateCallSettings = (patch: Partial<VoiceCallSettings>) => {
+        setCallSettings(prev => {
+            const next = { ...prev, ...patch };
+            saveVoiceCallSettings(next);
+            return next;
+        });
+    };
+    useEffect(() => {
+        if (!callSettings.bgId) { setCustomBg(null); return; }
+        let alive = true;
+        getChatImageFromIndexedDB(callSettings.bgId).then(url => { if (alive) setCustomBg(url); });
+        return () => { alive = false; };
+    }, [callSettings.bgId]);
+    const pickCallBackground = async (file: File | undefined) => {
+        if (!file) return;
+        try { updateCallSettings({ bgId: await saveChatImageToIndexedDB(file) }); } catch { /* ignore */ }
+    };
+    const resolveCallVoice = () => {
+        const s = callSettingsRef.current;
+        const id = callModeRef.current === "whisper" ? s.voiceWhisper : s.voiceDaily;
+        if (id) {
+            const found = loadVoiceConfigs().find(v => v.id === id);
+            if (found) return found;
+        }
+        return resolveVoiceConfig(session.contactId);
+    };
+    const finalBg = customBg || bgImageResolved;
+    const palette = CALL_THEMES[finalBg ? "night" : callSettings.theme];
 
     const sttRef = useRef<STTSession | null>(null);
     const audioAbortRef = useRef<(() => void) | null>(null);
@@ -356,7 +399,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                 } as ChatMessage]
                 : messagesRef.current;
             const aiResponseText = flattenCompletionResult(await generateChatCompletion(session, contextMessages, {
-                appTags: ["chat", "voice"],
+                appTags: ["chat", "voice", callModeRef.current],
             }));
 
             // Bail if call ended during generation
@@ -385,7 +428,7 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
             setInterimText("");
             setCallState("AI_SPEAKING");
 
-            const voiceConfig = resolveVoiceConfig(session.contactId);
+            const voiceConfig = resolveCallVoice();
             if (voiceConfig) {
                 if (stateRef.current === "ENDED" || turnSeq !== turnSeqRef.current) return;
                 try {
@@ -671,16 +714,84 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
 
     return (
         <div
-            className="absolute inset-0 z-[100] flex flex-col text-white overflow-hidden call-bg-default call-keyboard-shift"
-            style={bgImageResolved ? { ...keyboardOffsetStyle, background: `url(${bgImageResolved}) center/cover no-repeat` } : keyboardOffsetStyle}
+            className={`absolute inset-0 z-[100] flex flex-col overflow-hidden call-keyboard-shift ${palette.light ? "vc-light" : "vc-dark"}`}
+            style={{
+                ...keyboardOffsetStyle,
+                color: palette.ai,
+                background: finalBg ? `url(${finalBg}) center/cover no-repeat` : palette.bg,
+            }}
         >
-            {/* Dark overlay for readability */}
-            <div
-                className="call-overlay absolute inset-0 z-0"
-                {...(bgImageResolved ? { "data-has-image": "" } : {})}
-            />
+            <style>{`
+                .vc-seg, .vc-seg * { color: inherit !important; }
+                .vc-light .ui-call-btn { background: rgba(0,0,0,0.06) !important; color: #222 !important; }
+                .vc-light .ui-call-btn-danger { background: #e5484d !important; color: #fff !important; }
+                .vc-light .ui-call-mic { background: rgba(0,0,0,0.08) !important; color: #222 !important; }
+                .vc-light button[aria-label="打断对方，我来说"] { color: #222 !important; border-color: rgba(0,0,0,0.3) !important; background: rgba(0,0,0,0.05) !important; }
+                .vc-light .gcall-topbar-title, .vc-light .gcall-topbar-sub { color: #222 !important; }
+                .vc-light .call-volume-btn { color: #222 !important; }
+            `}</style>
+            {finalBg && (
+                <div className="call-overlay absolute inset-0 z-0" data-has-image="" />
+            )}
 
             <CallVolumeControl />
+
+            <button
+                type="button"
+                onClick={() => setMenuOpen(v => !v)}
+                aria-label="通话设置"
+                style={{ position: "absolute", top: "calc(var(--safe-area-top, 44px) + 10px)", right: 108, zIndex: 1000, width: 36, height: 36, borderRadius: 18, border: "none", background: "transparent", color: "inherit", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 24, lineHeight: 1 }}
+            >⋯</button>
+            {menuOpen && (
+                <div
+                    style={{ position: "absolute", top: "calc(var(--safe-area-top, 44px) + 54px)", right: 12, left: 12, zIndex: 1001, maxHeight: "60vh", overflow: "auto", padding: 16, borderRadius: 16, background: palette.light ? "#fff" : "#1b1d24", color: palette.light ? "#222" : "#fff", boxShadow: "0 10px 30px rgba(0,0,0,0.25)", fontSize: 14, display: "flex", flexDirection: "column", gap: 14 }}
+                >
+                    <div>
+                        <div style={{ opacity: 0.6, fontSize: 12, marginBottom: 6 }}>主题</div>
+                        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                            {(Object.keys(CALL_THEMES) as CallTheme[]).map(key => (
+                                <button key={key} type="button" onClick={() => updateCallSettings({ theme: key })}
+                                    style={{ padding: "6px 12px", borderRadius: 14, border: callSettings.theme === key ? "1.5px solid #7A6A9A" : "1px solid rgba(128,128,128,0.35)", background: "transparent", color: "inherit", cursor: "pointer" }}>
+                                    {CALL_THEMES[key].label}
+                                </button>
+                            ))}
+                        </div>
+                    </div>
+                    <div>
+                        <div style={{ opacity: 0.6, fontSize: 12, marginBottom: 6 }}>背景图（默认白底）</div>
+                        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                            <label style={{ padding: "6px 12px", borderRadius: 14, border: "1px solid rgba(128,128,128,0.35)", cursor: "pointer" }}>
+                                选择图片
+                                <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { void pickCallBackground(e.target.files?.[0]); e.target.value = ""; }} />
+                            </label>
+                            {callSettings.bgId && (
+                                <button type="button" onClick={() => updateCallSettings({ bgId: undefined })}
+                                    style={{ padding: "6px 12px", borderRadius: 14, border: "1px solid rgba(128,128,128,0.35)", background: "transparent", color: "inherit", cursor: "pointer" }}>清除</button>
+                            )}
+                        </div>
+                        <div style={{ opacity: 0.5, fontSize: 11, marginTop: 4 }}>使用背景图时界面自动切为夜间配色</div>
+                    </div>
+                    {(["daily", "whisper"] as CallMode[]).map(mode => {
+                        const key = mode === "daily" ? "voiceDaily" : "voiceWhisper";
+                        return (
+                            <div key={mode}>
+                                <div style={{ opacity: 0.6, fontSize: 12, marginBottom: 6 }}>{CALL_MODE_LABELS[mode].title} · 语音</div>
+                                <select
+                                    value={callSettings[key] || ""}
+                                    onChange={e => updateCallSettings({ [key]: e.target.value || undefined })}
+                                    style={{ width: "100%", padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(128,128,128,0.35)", background: "transparent", color: "inherit" }}
+                                >
+                                    <option value="">沿用角色绑定的语音</option>
+                                    {loadVoiceConfigs().map(v => (
+                                        <option key={v.id} value={v.id}>{v.name || v.provider}{v.defaultVoice ? ` · ${v.defaultVoice}` : ""}</option>
+                                    ))}
+                                </select>
+                            </div>
+                        );
+                    })}
+                    <div style={{ opacity: 0.5, fontSize: 11 }}>提示词在「设置 → 预设」中按标签管理：日常 chat/voice/daily，耳语 chat/voice/whisper。音色改动从下一句话开始生效。</div>
+                </div>
+            )}
 
             {/* Content wrapper — force white text so themes don't override call UI */}
             <div className="voicecall-controls gcall-body">
@@ -738,8 +849,11 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                     </div>
                 </div>
 
-                <div className="text-center ts-18 font-semibold mb-2">
+                <div className="text-center ts-18 font-semibold mb-1">
                     {character.name}
+                </div>
+                <div className="text-center mb-2" style={{ color: palette.sub, fontSize: 13 }}>
+                    {CALL_MODE_LABELS[callModeRef.current].icon} {CALL_MODE_LABELS[callModeRef.current].title}
                 </div>
 
                 {/* Subtitle area — top fade via mask */}
@@ -748,19 +862,23 @@ export function VoiceCallScreen({ session, character, onEnd, onConnect, initiato
                     className="voicecall-subtitle-mask flex-1 min-h-0 overflow-auto px-5 py-[10px] flex flex-col gap-2 relative"
                     {...(inputMode === "text" && callState !== "CONNECTING" && callState !== "ENDED" ? { "data-text-input": "" } : {})}
                 >
-                    {subtitles.map((sub) => (
+                    {subtitles.map((sub, i) => (
                         <div
                             key={sub.id}
-                            className="call-subtitle"
-                            data-role={sub.role}
+                            style={{ textAlign: "center", padding: "14px 4px", borderTop: i === 0 ? "none" : `1px solid ${palette.line}` }}
                         >
-                            <BilingualTextBlock text={sub.text} mode="plain" className="call-subtitle-bilingual" defaultExpanded={session.collapseBilingualTranslation !== false ? false : true} />
+                            <div style={{ fontSize: 11, letterSpacing: 1, marginBottom: 6, color: palette.sub }}>
+                                {sub.role === "user" ? userNameRef.current : character.name}
+                            </div>
+                            <div className="vc-seg" style={{ fontSize: 15, lineHeight: 1.8, color: sub.role === "user" ? palette.user : palette.ai }}>
+                                <BilingualTextBlock text={sub.text} mode="plain" className="call-subtitle-bilingual" defaultExpanded={session.collapseBilingualTranslation !== false ? false : true} />
+                            </div>
                         </div>
                     ))}
 
                     {/* Interim STT text */}
                     {interimText && callState === "USER_SPEAKING" && (
-                        <div className="call-subtitle" data-interim="">
+                        <div style={{ textAlign: "center", padding: "14px 4px", borderTop: `1px solid ${palette.line}`, color: palette.user, opacity: 0.7, fontSize: 15, lineHeight: 1.8 }}>
                             {interimText}
                         </div>
                     )}
