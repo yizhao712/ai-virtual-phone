@@ -1001,10 +1001,10 @@ export function ChatSettingsPanel({
                         };
                         const tick = valueToTick(shortTermBudget);
                         return (
-                            <div className="menu-item memory-slider-item">
-                                <div className="memory-slider-header">
+                            <div className="menu-item" style={{ display: "flex", flexDirection: "column", alignItems: "stretch", gap: 10 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", minWidth: 0 }}>
                                     <ChatInfoIcon icon={MessageSquare} color={BINDING_ACCENTS.voice} />
-                                    <div className="menu-label-group">
+                                    <div className="menu-label-group" style={{ flex: 1, minWidth: 0 }}>
                                         <span className="menu-label">短期记忆+最近上下文</span>
                                         <span className="menu-desc">聊天历史、朋友圈、群聊与跨应用近期事件截断量（所有角色共用）</span>
                                     </div>
@@ -1021,7 +1021,8 @@ export function ChatSettingsPanel({
                                         setShortTermBudget(next);
                                         saveMemoryConfig({ ...loadMemoryConfig(), shortTermTokenBudget: next });
                                     }}
-                                    className="ui-slider memory-settings-slider"
+                                    className="ui-slider"
+                                    style={{ width: "100%" }}
                                     aria-label="短期记忆+最近上下文"
                                 />
                             </div>
