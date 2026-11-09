@@ -106,6 +106,8 @@ type MemoryEditorState = {
     type: MemoryEntry["type"];
     entry?: MemoryEntry;
     content: string;
+    /** 新增到向量库（保存为隐藏的长期记忆） */
+    toVector?: boolean;
     /** 新增长期记忆时指定的归属日期（YYYY-MM-DD） */
     memoryDate?: string;
 };
@@ -628,12 +630,13 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
         }
     };
 
-    const openCreateMemoryEditor = (type: MemoryEntry["type"], memoryDate?: string) => {
+    const openCreateMemoryEditor = (type: MemoryEntry["type"], memoryDate?: string, toVector?: boolean) => {
         setEntryMenuId(null);
         setMemoryEditor({
             type,
             content: "",
             memoryDate: type === "long_term" ? (memoryDate ?? toLocalDateString(new Date().toISOString())) : undefined,
+            toVector: type === "long_term" ? toVector : undefined,
         });
     };
 
@@ -687,6 +690,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     updatedAt: now,
                     metadata: {
                         origin: "user_manual",
+                        ...(memoryEditor.toVector ? { hidden: true } : {}),
                         ...(type === "long_term" && memoryEditor.memoryDate && MEMORY_DATE_PATTERN.test(memoryEditor.memoryDate)
                             ? { memoryDate: memoryEditor.memoryDate }
                             : {}),
@@ -701,7 +705,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
             }
             setMemoryEditor(null);
             setExpandedId(entry.id);
-            if (type === "long_term") setLongView("pinned");
+            if (type === "long_term") setLongView(memoryEditor.toVector || (source && isMemoryHidden(source)) ? "vector" : "pinned");
             loadCharacterList();
             showNotice(type === "core" ? "核心记忆已保存" : "长期记忆已保存");
         } catch (error) {
@@ -1005,10 +1009,10 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                     <div className="mem-entry-toolbar">
                         <button
                             className="mem-entry-add-btn"
-                            onClick={() => openCreateMemoryEditor(type)}
+                            onClick={() => openCreateMemoryEditor(type, undefined, isLong && longView === "vector")}
                         >
                             <Plus size={15} strokeWidth={1.8} />
-                            <span>新增{label}</span>
+                            <span>{isLong && longView === "vector" ? "新增向量记忆" : `新增${label}`}</span>
                         </button>
                         <button
                             className="mem-entry-clear-btn"
@@ -1110,9 +1114,9 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 {entries.length === 0 ? (
                     <div className="mem-empty-card">
                         <p>{emptyText}</p>
-                        <button className="mem-empty-add-btn" onClick={() => openCreateMemoryEditor(type)}>
+                        <button className="mem-empty-add-btn" onClick={() => openCreateMemoryEditor(type, undefined, isLong && longView === "vector")}>
                             <Plus size={14} />
-                            <span>新增{label}</span>
+                            <span>{isLong && longView === "vector" ? "新增向量记忆" : `新增${label}`}</span>
                         </button>
                     </div>
                 ) : (
