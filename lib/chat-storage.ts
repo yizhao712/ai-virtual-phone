@@ -1167,8 +1167,8 @@ export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "sta
     _messagesCache.push(newMsg);
     dbPutMessage(newMsg);
 
-    // 用户发消息时，若该会话被左滑隐藏过，自动取消隐藏（键名与消息列表一致）
-    if (newMsg.role === "user") {
+    // 只要有新消息写入，若该会话被左滑隐藏过，自动取消隐藏（键名与消息列表一致）
+    {
         try {
             const rawHidden = kvGet("ai_phone_hidden_sessions_v1");
             const hiddenIds: unknown = rawHidden ? JSON.parse(rawHidden) : [];
