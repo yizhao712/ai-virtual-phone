@@ -783,7 +783,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                 updatedAt: new Date().toISOString(),
                 metadata: { ...(entry.metadata ?? {}), hidden },
             });
-            showNotice(hidden ? "已隐藏：不再固定注入、不参与总结，聊到相关话题时仍可被向量召回" : "已取消隐藏");
+            showNotice(hidden ? "已转移至向量库：不再固定注入、不参与总结，聊到相关话题时仍可被向量召回" : "已转移至固定线");
         } catch (error) {
             showNotice("操作失败: " + String(error));
         }
@@ -1302,7 +1302,7 @@ export function MemoryBankPage({ view, selectedCharId, onSelectChar, onNotice }:
                                                     <>
                                                         <button onClick={() => void handleToggleHidden(entry)}>
                                                             {isMemoryHidden(entry) ? <Eye size={13} /> : <EyeOff size={13} />}
-                                                            <span>{isMemoryHidden(entry) ? "取消隐藏" : "隐藏"}</span>
+                                                            <span>{isMemoryHidden(entry) ? "转移至固定线" : "转移至向量库"}</span>
                                                         </button>
                                                         <button onClick={() => openDateEditor(entry)}>
                                                             <CalendarDays size={13} />
