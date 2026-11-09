@@ -539,6 +539,7 @@ export function ChatMessageList({ onCloseApp, activeSession, onSelectSession, on
                                         dispatchFriendRequestUpdated();
                                         // 2. Create or get session
                                         const newSession = createOrGetSession(searchResult.id);
+                                        saveHiddenSessionIds(loadHiddenSessionIds().filter(id => id !== newSession.id));
 
                                         // Check if re-adding (session already has messages)
                                         const isReAdd = loadChatMessages(newSession.id).length > 0;

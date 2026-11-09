@@ -1167,6 +1167,17 @@ export function pushChatMessage(msg: Omit<ChatMessage, "id" | "createdAt" | "sta
     _messagesCache.push(newMsg);
     dbPutMessage(newMsg);
 
+    // 用户发消息时，若该会话被左滑隐藏过，自动取消隐藏（键名与消息列表一致）
+    if (newMsg.role === "user") {
+        try {
+            const rawHidden = kvGet("ai_phone_hidden_sessions_v1");
+            const hiddenIds: unknown = rawHidden ? JSON.parse(rawHidden) : [];
+            if (Array.isArray(hiddenIds) && hiddenIds.includes(msg.sessionId)) {
+                kvSet("ai_phone_hidden_sessions_v1", JSON.stringify(hiddenIds.filter(id => id !== msg.sessionId)));
+            }
+        } catch { /* ignore */ }
+    }
+
     // Auto update session last message only for records that can produce a list preview.
     // 优化：直接增量更新内存会话缓存并异步写单条，避免每次发送都走 loadChatSessions +
     // saveChatSessions 触发全量会话预览重算（会话/消息多了以后会明显卡顿）。
