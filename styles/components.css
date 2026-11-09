@@ -5021,6 +5021,7 @@
   justify-content: center;
   gap: 8px;
   padding: 14px 2px 12px;
+  flex-wrap: wrap;
 }
 
 .mem-entry-add-btn,
@@ -5137,6 +5138,20 @@
   border-radius: 999px;
   cursor: pointer;
   transition: background 0.15s ease, color 0.15s ease;
+}
+
+.mem-entry-toolbar .mem-entry-menu-btn {
+  width: auto;
+  min-width: 28px;
+  padding: 0 8px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mem-entry-toolbar .mem-entry-add-btn,
+.mem-entry-toolbar .mem-entry-clear-btn {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .mem-entry-menu-btn:active {
