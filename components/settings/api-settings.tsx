@@ -572,6 +572,30 @@ export function ApiSettings() {
                                                             <option key={m} value={m} />
                                                         ))}
                                                     </datalist>
+                                                    {/* iOS Safari 不弹 datalist，改用可点选的显式列表：既能下拉选，也能在上面手输 */}
+                                                    {(fetchedModels[config.id] ?? []).length > 0 && (
+                                                        <div className="flex flex-col gap-1 mt-1">
+                                                            <span className="menu-desc ml-1">已拉取 {fetchedModels[config.id].length} 个模型，点击选择</span>
+                                                            <div className="flex flex-col gap-0.5 max-h-[220px] overflow-y-auto rounded-xl border border-[var(--c-border)] p-1">
+                                                                {fetchedModels[config.id].map(m => (
+                                                                    <button
+                                                                        key={m}
+                                                                        type="button"
+                                                                        onClick={() => updateConfig(config.id, { defaultModel: m })}
+                                                                        className="flex items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left"
+                                                                        style={{
+                                                                            background: config.defaultModel === m ? "color-mix(in srgb, var(--c-icon-active) 12%, transparent)" : "transparent",
+                                                                            color: config.defaultModel === m ? "var(--c-icon-active)" : "var(--c-text-title)",
+                                                                            fontSize: "calc(12.6px*var(--app-text-scale,1))",
+                                                                        }}
+                                                                    >
+                                                                        <span className="min-w-0 truncate">{m}</span>
+                                                                        {config.defaultModel === m ? <Check size={14} className="shrink-0" /> : null}
+                                                                    </button>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
                                                     {config.defaultModel && (
                                                         <span className="menu-desc ml-1 break-all">当前模型：{config.defaultModel}</span>
                                                     )}
