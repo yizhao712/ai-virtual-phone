@@ -38,10 +38,14 @@ function saveTimedWakeSchedules(schedules: TimedWakeSchedule[]): void {
 }
 
 export function saveTimedWakeSchedule(schedule: TimedWakeSchedule): void {
+    // 按定时自身 id 去重，而不是按会话：同一会话允许多个定时共存。
+    // 以前按 sessionId 覆盖，用户设好「一小时后提醒」后照常聊天，角色再调一次本工具
+    // 就会把原来那条顶掉，到点不触发。
     const all = loadTimedWakeSchedules();
-    const next = all.filter(item => item.sessionId !== schedule.sessionId);
-    next.push(schedule);
-    saveTimedWakeSchedules(next);
+    const idx = all.findIndex(item => item.id === schedule.id);
+    if (idx >= 0) all[idx] = schedule;
+    else all.push(schedule);
+    saveTimedWakeSchedules(all);
 }
 
 export function clearTimedWakeSchedule(sessionId: string): void {
