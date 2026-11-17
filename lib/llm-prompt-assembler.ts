@@ -23,7 +23,7 @@ export type LLMToolCallPayload = { id: string; name: string; args: Record<string
 
 export type LLMContentPart =
     | { type: "text"; text: string }
-    | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" } };
+    | { type: "image_url"; image_url: { url: string; detail?: "low" | "high" | "auto" | "original" } };
 
 export type LLMMessage = {
     role: LLMMessageRole;
@@ -1071,7 +1071,7 @@ export function assemblePromptPayload(input: AssemblerInput): LLMMessage[] {
             // Vision message: build multi-part content with image (never merged)
             const parts: LLMContentPart[] = [];
             if (processedText) parts.push({ type: "text", text: processedText });
-            parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "low" } });
+            parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "original" } });
             finalPayload.push({
                 role: b.role,
                 content: parts,
@@ -2233,7 +2233,7 @@ export function assembleGroupPromptPayload(input: GroupAssemblerInput): LLMMessa
             // Vision message: build multi-part content with image (never merged)
             const parts: LLMContentPart[] = [];
             if (processedText) parts.push({ type: "text", text: processedText });
-            parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "low" } });
+            parts.push({ type: "image_url", image_url: { url: b.imageUrl, detail: "original" } });
             finalPayload.push({
                 role: b.role,
                 content: parts,

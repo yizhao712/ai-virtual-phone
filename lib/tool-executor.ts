@@ -4199,6 +4199,41 @@ async function executeMcpTool(server: McpServerConfig, toolName: string, args: R
     }
 }
 
+/** MCP 服务端附带、对模型判断有实际意义的元字段：全黑截屏、调用报错、图片地址。 */
+const MCP_RESULT_META_KEYS = ["dark", "error", "image_url"] as const;
+
+/**
+ * 从 MCP 文本结果中挑出上述元字段（有值才带，取不到返回 null）。
+ * 只在有附件、正文会被"已自动发送"提示整句替换时才用到——避免服务端附带的
+ * dark / error / image_url 被一并丢掉，导致模型拿到全黑截图却毫不知情。
+ */
+function pickMcpResultMeta(textParts: string[]): Record<string, unknown> | null {
+    const picked: Record<string, unknown> = {};
+    const visit = (value: unknown, depth: number): void => {
+        if (depth > 4 || !value || typeof value !== "object" || Array.isArray(value)) return;
+        const record = value as Record<string, unknown>;
+        for (const key of MCP_RESULT_META_KEYS) {
+            if (key in picked) continue;
+            const item = record[key];
+            if (item === undefined || item === null || item === "") continue;
+            // 只透传标量；嵌套对象（如完整 image 元信息）不塞进提示词，避免噪音。
+            if (typeof item === "object") continue;
+            picked[key] = item;
+        }
+        for (const nested of Object.values(record)) {
+            if (nested && typeof nested === "object" && !Array.isArray(nested)) visit(nested, depth + 1);
+        }
+    };
+    for (const part of textParts) {
+        const trimmed = part.trim();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) continue;
+        try {
+            visit(JSON.parse(trimmed), 0);
+        } catch { /* 不是 JSON 文本，跳过 */ }
+    }
+    return Object.keys(picked).length > 0 ? picked : null;
+}
+
 async function extractMcpToolResult(toolName: string, result: unknown, signal?: AbortSignal): Promise<ToolResult> {
     throwIfAborted(signal);
     const r = result as { content?: { type?: string; text?: string; data?: string; mimeType?: string }[] } | undefined;
@@ -4229,9 +4264,14 @@ async function extractMcpToolResult(toolName: string, result: unknown, signal?: 
         toolResult.mediaAttachments = allAttachments;
         const labels = allAttachments.map(a => ({ audio: "音频", image: "图片", video: "视频", file: "文件" })[a.type] || "文件");
         const unique = [...new Set(labels)];
-        toolResult.data = allAttachments.length === 1
+        const sendNotice = allAttachments.length === 1
             ? `${unique[0]}已自动发送给用户。不要再用文字标签描述或重复发送。`
             : `${unique.join("/")}已自动发送给用户（共 ${allAttachments.length} 个）。不要再用文字标签描述或重复发送。`;
+        // 正文被上面这句整句替换后，服务端附带的元信息会全部丢失：
+        // 截到全黑屏时模型看不到 dark，工具报错时看不到 error。这里只补标量字段，
+        // 不重拼整段 JSON；没有可补的字段时行为与原来完全一致。
+        const meta = pickMcpResultMeta(textParts);
+        toolResult.data = meta ? `${sendNotice}\n[meta]${JSON.stringify(meta)}` : sendNotice;
     }
     return toolResult;
 }

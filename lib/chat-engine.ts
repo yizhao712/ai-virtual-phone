@@ -101,7 +101,7 @@ export class ChatEngineError extends Error {
     }
 }
 
-const LLM_IMAGE_MAX_SIDE = 512;
+const LLM_IMAGE_MAX_SIDE = 1568;
 const LLM_IMAGE_JPEG_QUALITY = 0.72;
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -2419,7 +2419,7 @@ async function generateNativeChatCompletion(
                                     role: "user",
                                     content: [
                                         { type: "text", text: "系统记录：这是你刚才生成的图片。" },
-                                        { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+                                        { type: "image_url", image_url: { url: dataUrl, detail: "original" } },
                                     ],
                                 });
                             }
@@ -2810,7 +2810,7 @@ async function generateChatCompletionCore(
                                         role: "user",
                                         content: [
                                             { type: "text", text: "系统记录：这是你刚才生成的图片。" },
-                                            { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+                                            { type: "image_url", image_url: { url: dataUrl, detail: "original" } },
                                         ],
                                     });
                                 }
