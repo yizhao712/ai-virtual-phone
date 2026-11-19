@@ -39,7 +39,9 @@ export function ApiSettings() {
     const [isNewConfig, setIsNewConfig] = useState(false);
     const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
     // 拖动排序：按住右侧把手上下拖，松手按位移换算目标位置
-    const [drag, setDrag] = useState<{ id: string; startY: number; offset: number; rowH: number } | null>(null);
+    // zone = 该卡片所在的可见区（分组 id 或 ungrouped），fromIndex = 区内的初始索引。
+    // 不能直接用 configs 索引：列表是分组优先渲染的，两者并不一致。
+    const [drag, setDrag] = useState<{ id: string; startY: number; offset: number; rowH: number; zone: string; fromIndex: number } | null>(null);
     const [isLoaded, setIsLoaded] = useState(false);
 
     // ── API 分组 ──
@@ -148,28 +150,76 @@ export function ApiSettings() {
         setTestResult(newTestResults);
     };
 
-    // 复制：生成「原名 副本」，插在原配置下面（Key / 地址 / 模型一并复制）
+    // ── 可见顺序 ──
+    // 列表是「分组优先」渲染的（各组在前、未分组在后），configs 数组顺序只是存储顺序，
+    // 两者并不一致。排序与复制都必须按可见顺序走，否则会出现：
+    //  · 复制分组内的 API，副本进不了组、被甩到「未分组」区末尾；
+    //  · 拖动时位移换算出的索引和看到的邻居对不上，未分组区只剩一张卡片时怎么拖都回原位。
+    const zoneKeyOf = (id: string): string => {
+        const owner = groups.find(g => g.apiIds.includes(id));
+        return owner ? `group:${owner.id}` : "ungrouped";
+    };
+    const zoneIdsOf = (zoneKey: string): string[] => {
+        const alive = new Set(configs.map(c => c.id));
+        if (zoneKey === "ungrouped") {
+            const grouped = new Set(groups.flatMap(g => g.apiIds));
+            return configs.filter(c => !grouped.has(c.id)).map(c => c.id);
+        }
+        const owner = groups.find(g => zoneKey === `group:${g.id}`);
+        return owner ? owner.apiIds.filter(id => alive.has(id)) : [];
+    };
+    const reorderInZone = (zoneKey: string, fromIndex: number, toIndex: number) => {
+        const ids = zoneIdsOf(zoneKey);
+        if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0
+            || fromIndex >= ids.length || toIndex >= ids.length) return;
+        const nextIds = [...ids];
+        const [moved] = nextIds.splice(fromIndex, 1);
+        nextIds.splice(toIndex, 0, moved);
+        if (zoneKey === "ungrouped") {
+            // 未分组区换位：只回填这些项原本占用的槽位，已分组项的位置不受影响。
+            const grouped = new Set(groups.flatMap(g => g.apiIds));
+            const slots: number[] = [];
+            configs.forEach((c, i) => { if (!grouped.has(c.id)) slots.push(i); });
+            const byId = new Map(configs.map(c => [c.id, c]));
+            const next = [...configs];
+            slots.forEach((slot, i) => {
+                const item = byId.get(nextIds[i]);
+                if (item) next[slot] = item;
+            });
+            persist(next);
+            return;
+        }
+        const gid = zoneKey.slice("group:".length);
+        persistGroups(groups.map(g => g.id === gid ? { ...g, apiIds: nextIds } : g));
+    };
+
+    // 复制：生成「原名 副本」，紧跟原配置显示（Key / 地址 / 模型一并复制）
     const duplicateConfig = (id: string) => {
-        const index = configs.findIndex(c => c.id === id);
-        if (index < 0) return;
-        const source = configs[index];
+        const source = configs.find(c => c.id === id);
+        if (!source) return;
         const copy: ApiConfig = {
             ...source,
             id: `config-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
             name: `${source.name || source.defaultModel || source.provider} 副本`,
         };
+        const index = configs.findIndex(c => c.id === id);
+        if (index < 0) return;
         const next = [...configs];
         next.splice(index + 1, 0, copy);
         persist(next);
-    };
-
-    // 换位：数组顺序即显示顺序（悬浮球 API 列表同序）
-    const moveConfig = (fromIndex: number, toIndex: number) => {
-        if (fromIndex === toIndex || fromIndex < 0 || toIndex < 0 || fromIndex >= configs.length || toIndex >= configs.length) return;
-        const next = [...configs];
-        const [item] = next.splice(fromIndex, 1);
-        next.splice(toIndex, 0, item);
-        persist(next);
+        // 原配置在分组里时，副本也要进同一个分组并紧跟其后；
+        // 否则它会因为「不属于任何分组」被渲染到未分组区末尾，看起来像跑到了别的位置。
+        const owner = groups.find(g => g.apiIds.includes(id));
+        if (!owner) return;
+        const at = owner.apiIds.indexOf(id);
+        persistGroups(groups.map(g => g.id === owner.id
+            ? {
+                ...g,
+                // 折叠状态下复制会让人以为「没复制出来」，顺手展开
+                collapsed: false,
+                apiIds: [...g.apiIds.slice(0, at + 1), copy.id, ...g.apiIds.slice(at + 1)],
+            }
+            : g));
     };
 
     // Use unified determineBaseUrl from api-helpers
@@ -419,11 +469,15 @@ export function ApiSettings() {
                                         event.stopPropagation();
                                         const card = (event.currentTarget as HTMLElement).closest("[data-api-card]") as HTMLElement | null;
                                         const rect = card?.getBoundingClientRect();
-                                        const sibling = (card?.nextElementSibling ?? card?.previousElementSibling) as HTMLElement | null;
-                                        const siblingRect = sibling?.getBoundingClientRect();
-                                        const rowH = rect && siblingRect ? Math.abs(siblingRect.top - rect.top) || rect.height + 8 : (rect?.height ?? 54) + 8;
+                                        const zone = zoneKeyOf(config.id);
+                                        // rowH = 单张卡片高度 + 列表固定间距（容器 gap-2 = 8px）。
+                                        // 不要拿相邻卡片反推：所有分组的卡片都在同一个父容器里，
+                                        // 相邻元素可能是别的分组、中间还隔着分组标题行，反推出的行高会偏大，
+                                        // 拖动一格实际移动不满一格，看起来就像「拖不动」。
+                                        const rowH = (rect?.height ?? 54) + 8;
+                                        const fromIndex = Math.max(0, zoneIdsOf(zone).indexOf(config.id));
                                         event.currentTarget.setPointerCapture(event.pointerId);
-                                        setDrag({ id: config.id, startY: event.clientY, offset: 0, rowH });
+                                        setDrag({ id: config.id, startY: event.clientY, offset: 0, rowH, zone, fromIndex });
                                     }}
                                     onPointerMove={(event) => {
                                         if (!drag || drag.id !== config.id) return;
@@ -431,10 +485,12 @@ export function ApiSettings() {
                                     }}
                                     onPointerUp={() => {
                                         if (!drag || drag.id !== config.id) return;
-                                        const from = configs.findIndex(c => c.id === config.id);
-                                        const to = Math.max(0, Math.min(configs.length - 1, from + Math.round(drag.offset / drag.rowH)));
+                                        // 只在拖起时所在的那个区里换位：跨区拖（从一个分组拖到未分组）
+                                        // 需要同步改分组归属，属于另一件事，先按同区排序处理。
+                                        const zoneCount = zoneIdsOf(drag.zone).length;
+                                        const to = Math.max(0, Math.min(zoneCount - 1, drag.fromIndex + Math.round(drag.offset / drag.rowH)));
                                         setDrag(null);
-                                        moveConfig(from, to);
+                                        reorderInZone(drag.zone, drag.fromIndex, to);
                                     }}
                                     onPointerCancel={() => setDrag(null)}
                                 >
